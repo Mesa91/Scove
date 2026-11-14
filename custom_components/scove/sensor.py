@@ -26,11 +26,12 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
         S(hub, "battery_retention", "Capacità batteria", lambda h: h.battery_retention, PERCENTAGE,
           icon="mdi:battery-heart-variant", diag=True),
         S(hub, "battery_cycles", "Cicli batteria",
-          lambda h: logic.battery_cycles(h.reported), icon="mdi:battery-sync", diag=True),
+          lambda h: logic.battery_cycles(h.reported), icon="mdi:battery-sync", diag=True,
+          state_class=SensorStateClass.TOTAL_INCREASING),
         S(hub, "wifi", "Segnale Wi-Fi", lambda h: (h.reported.get("signal") or {}).get("rssi"), "dBm",
           SensorDeviceClass.SIGNAL_STRENGTH, diag=True),
         S(hub, "missions", "Missioni totali", lambda h: (h.reported.get("bbmssn") or {}).get("nMssn"),
-          icon="mdi:counter", diag=True),
+          icon="mdi:counter", diag=True, state_class=SensorStateClass.TOTAL_INCREASING),
         S(hub, "next_run", "Prossima pulizia", lambda h: h.next_run, device_class=SensorDeviceClass.TIMESTAMP),
         S(hub, "last_alert", "Ultimo avviso",
           lambda h: ((h.data.get("alerts") or [{}])[0].get("message") or "Nessuno")[:250], icon="mdi:bell-outline"),
@@ -52,13 +53,16 @@ class ScoveSensor(ScoveEntity, SensorEntity):
         unit: str | None = None, device_class: SensorDeviceClass | None = None,
         icon: str | None = None, diag: bool = False,
         attrs: Callable[[ScoveHub], dict] | None = None,
+        state_class: SensorStateClass | None = None,
     ) -> None:
         super().__init__(hub, key, name)
         self._value, self._attrs = value, attrs
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = device_class
         self._attr_icon = icon
-        if unit and device_class is not SensorDeviceClass.TIMESTAMP:
+        if state_class:
+            self._attr_state_class = state_class
+        elif unit and device_class is not SensorDeviceClass.TIMESTAMP:
             self._attr_state_class = SensorStateClass.MEASUREMENT
         if diag:
             self._attr_entity_category = EntityCategory.DIAGNOSTIC

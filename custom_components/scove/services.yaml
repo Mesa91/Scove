@@ -28,7 +28,7 @@ reset_part:
       required: true
       selector:
         select:
-          options: [filter, brushes, side_brush, bag, wheels, contacts, sensors]
+          options: [bin, filter_clean, filter, brushes, side_brush, wheels, contacts, sensors]
 refresh_map:
   name: Aggiorna mappa
   description: Scarica di nuovo stanze e zone vietate dal cloud iRobot.

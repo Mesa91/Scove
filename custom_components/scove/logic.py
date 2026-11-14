@@ -39,7 +39,8 @@ def parts_status(now_hours: float, baselines: dict[str, float]) -> dict[str, dic
         ratio = used / part["hours"]
         level = "due" if remaining <= 0 else "soon" if ratio >= 0.8 else "ok"
         out[key] = {
-            "name": part["name"], "interval": part["hours"],
+            "name": part["name"], "interval": part["hours"], "todo": part["todo"],
+            "routine": bool(part.get("routine")),
             "remaining": round(remaining, 1), "used_pct": round(min(ratio, 1.5) * 100),
             "level": level,
         }
@@ -59,7 +60,10 @@ def health_score(
 ) -> int:
     score = 100.0
     for p in parts.values():
-        score -= 8 if p["level"] == "due" else 3 if p["level"] == "soon" else 0
+        if p.get("routine"):
+            score -= 2 if p["level"] == "due" else 0
+        else:
+            score -= 8 if p["level"] == "due" else 3 if p["level"] == "soon" else 0
     ret = battery_retention(reported, peak)
     if ret is not None and ret < 80:
         score -= min(25.0, (80 - ret) * 0.8)

@@ -8,13 +8,14 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant.components import panel_custom, websocket_api
+from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
-from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import config_validation as cv, entity_registry as er
 
-from .const import DOMAIN, PLATFORMS, VERSION
+from .const import DOMAIN, PLATFORMS, REMOVED_PARTS, VERSION
 from .hub import ScoveHub
 
 _LOGGER = logging.getLogger(__name__)
@@ -31,6 +32,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ScoveConfigEntry) -> boo
             await hub.client.disconnect()
         raise ConfigEntryNotReady(f"Robot non raggiungibile: {err!r}") from err
     entry.runtime_data = hub
+    registry = er.async_get(hass)
+    gone = {f"{hub.blid}_{prefix}_{part}" for part in REMOVED_PARTS for prefix in ("part", "reset")}
+    for ent in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if ent.unique_id in gone:
+            registry.async_remove(ent.entity_id)
     await _async_setup_shared(hass)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
@@ -65,6 +71,8 @@ async def _async_setup_shared(hass: HomeAssistant) -> None:
         module_url=f"{PANEL_URL}/scove-panel.js?v={VERSION}",
         sidebar_title="Scove", sidebar_icon="mdi:robot-vacuum", require_admin=False,
     )
+
+    add_extra_js_url(hass, f"{PANEL_URL}/scove-map-card.js?v={VERSION}")
 
     async def clean_rooms(call: ServiceCall) -> None:
         await _hub(hass).async_clean_rooms(

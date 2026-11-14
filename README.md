@@ -15,9 +15,10 @@ Dopo l'installazione compare la voce **Scove** nella barra laterale.
 
 - **Comandi**: avvia, pausa, stop, base, trova, svuota; pulizia di una o più stanze.
 - **Programma**: più programmi con giorni, orario e stanze. Se il robot non può partire (già al lavoro, contenitore pieno, batteria bassa, non raggiungibile) il programma viene saltato con un avviso.
-- **Salute**: punteggio generale, ore rimaste per filtro, spazzole, spazzola laterale, sacchetto, pulizia di ruote, contatti e sensori; stato della batteria; storico delle pulizie.
-- **Avvisi**: errori, robot bloccato, contenitore pieno, manutenzione, programma saltato, robot non raggiungibile, fine pulizia. Arrivano come notifica di Home Assistant, come evento `scove_alert` e, se indicato, a un servizio `notify`.
+- **Salute**: punteggio generale, ore rimaste per contenitore della polvere, pulizia e sostituzione del filtro, spazzole, spazzola laterale, pulizia di ruote, contatti e sensori; stato della batteria; storico delle pulizie.
+- **Avvisi**: partenza, errori, robot bloccato, contenitore pieno, manutenzione, programma saltato, robot non raggiungibile, fine pulizia. Arrivano come notifica di Home Assistant, come evento `scove_alert` e, se indicato, a un servizio `notify`.
 - **Stanze e aree**: ogni stanza della mappa del robot si associa a un'area di Home Assistant; il servizio `scove.clean_rooms` accetta `rooms` oppure `areas`.
+- **Scheda per le dashboard**: `type: custom:scove-map-card` mostra stanze, zone vietate e passaggi (opzioni `title`, `history`).
 - **Mappa**: stanze del robot, zone vietate impostate in iRobot, percorso dell'ultima pulizia e storico dei passaggi.
 
 ## Limiti noti della 1.0.0
@@ -32,7 +33,7 @@ Dopo l'installazione compare la voce **Scove** nella barra laterale.
 | Servizio | Dati |
 | --- | --- |
 | `scove.clean_rooms` | `rooms: [nomi]` oppure `areas: [area_id]` |
-| `scove.reset_part` | `part: filter \| brushes \| side_brush \| bag \| wheels \| contacts \| sensors` |
+| `scove.reset_part` | `part: bin \| filter_clean \| filter \| brushes \| side_brush \| wheels \| contacts \| sensors` |
 | `scove.refresh_map` | — |
 
 Usa la libreria [roombapy](https://github.com/pschmitt/roombapy) (MIT) per il collegamento locale.

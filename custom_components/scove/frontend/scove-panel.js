@@ -203,6 +203,7 @@ class ScovePanel extends HTMLElement {
         <p class="muted">Gli avvisi compaiono sempre nelle notifiche di Home Assistant e come evento «scove_alert». Per riceverli anche sul telefono indica un servizio di notifica.</p>
         <div class="row">Servizio <input data-set="notify_service" value="${esc(s.settings.notify_service || "")}" placeholder="notify.famiglia" style="width:220px">
           Batteria minima per partire (%) <input type="number" data-set="min_battery" value="${s.settings.min_battery}">
+          <button class="chip ${s.settings.notify_start ? "on" : ""}" id="notify-start">Avviso alla partenza</button>
           <button class="chip ${s.settings.notify_done ? "on" : ""}" id="notify-done">Avviso a fine pulizia</button></div></div>
       <div class="card"><h2>Avvisi recenti</h2><div class="list">${s.alerts.length ? s.alerts.map((a) => `<div><span class="pill ${a.kind === "problema" ? "due" : a.kind === "info" ? "ok" : "soon"}">${esc(a.kind)}</span> ${esc(a.message)} <span class="muted">· ${fmtDate(a.time)}</span></div>`).join("") : `<div class="muted">Nessun avviso.</div>`}</div></div>`;
   }
@@ -268,6 +269,8 @@ class ScovePanel extends HTMLElement {
     }
 
     q("[data-set]").forEach((el) => (el.onchange = () => this._save("settings", { ...s.settings, [el.dataset.set]: el.type === "number" ? Number(el.value) : el.value })));
+    const ns = one("#notify-start");
+    if (ns) ns.onclick = () => this._save("settings", { ...s.settings, notify_start: !s.settings.notify_start });
     const nd = one("#notify-done");
     if (nd) nd.onclick = () => this._save("settings", { ...s.settings, notify_done: !s.settings.notify_done });
   }

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 DOMAIN = "scove"
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 PLATFORMS = ["vacuum", "sensor", "binary_sensor", "button"]
 
 CONF_BLID = "blid"
@@ -14,14 +14,22 @@ STORAGE_VERSION = 1
 
 # Ore di lavoro tra una manutenzione e l'altra (valori iRobot per la serie i).
 PARTS: dict[str, dict] = {
-    "filter": {"name": "Filtro", "hours": 52, "icon": "mdi:air-filter"},
-    "brushes": {"name": "Spazzole", "hours": 312, "icon": "mdi:brush"},
-    "side_brush": {"name": "Spazzola laterale", "hours": 157, "icon": "mdi:fan"},
-    "bag": {"name": "Sacchetto Clean Base", "hours": 29, "icon": "mdi:sack"},
-    "wheels": {"name": "Pulizia ruote", "hours": 60, "icon": "mdi:tire"},
-    "contacts": {"name": "Pulizia contatti di ricarica", "hours": 60, "icon": "mdi:flash"},
-    "sensors": {"name": "Pulizia sensori e contenitore", "hours": 30, "icon": "mdi:eye"},
+    "bin": {"name": "Contenitore della polvere", "hours": 3, "icon": "mdi:delete-variant",
+            "todo": "Svuota il contenitore della polvere", "routine": True},
+    "filter_clean": {"name": "Pulizia filtro", "hours": 12, "icon": "mdi:air-filter",
+                     "todo": "Pulisci il filtro", "routine": True},
+    "filter": {"name": "Filtro", "hours": 52, "icon": "mdi:air-filter", "todo": "Sostituisci il filtro"},
+    "brushes": {"name": "Spazzole", "hours": 312, "icon": "mdi:brush", "todo": "Sostituisci le spazzole"},
+    "side_brush": {"name": "Spazzola laterale", "hours": 157, "icon": "mdi:fan",
+                   "todo": "Sostituisci la spazzola laterale"},
+    "wheels": {"name": "Pulizia ruote", "hours": 60, "icon": "mdi:tire", "todo": "Pulisci le ruote"},
+    "contacts": {"name": "Pulizia contatti di ricarica", "hours": 60, "icon": "mdi:flash",
+                 "todo": "Pulisci i contatti di ricarica"},
+    "sensors": {"name": "Pulizia sensori", "hours": 30, "icon": "mdi:eye",
+                "todo": "Pulisci i sensori di dislivello"},
 }
+# Componenti di versioni precedenti, da togliere dal registro delle entità.
+REMOVED_PARTS = ("bag",)
 
 MISSION_PHASES = {"run", "hmUsrDock", "hmMidMsn", "hmPostMsn", "evac", "pause", "stuck"}
 MOVING_PHASES = {"run", "hmUsrDock", "hmMidMsn", "hmPostMsn"}

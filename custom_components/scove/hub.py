@@ -31,7 +31,7 @@ _LOGGER = logging.getLogger(__name__)
 MAX_TRAIL = 6000
 MAX_HISTORY = 30
 MAX_ALERTS = 60
-DEFAULT_SETTINGS = {"notify_service": "", "min_battery": 30, "notify_done": True}
+DEFAULT_SETTINGS = {"notify_service": "", "min_battery": 30, "notify_done": True, "notify_start": True}
 
 
 class ScoveHub:
@@ -60,6 +60,7 @@ class ScoveHub:
         self._offline_since: float | None = None
         self._offline_alerted = False
         self._dirty = False
+        self._pending_schedule: str | None = None
 
     # ── avvio / arresto ────────────────────────────────────────────────
 
@@ -94,6 +95,8 @@ class ScoveHub:
             # i riferimenti salvati allora non sono confrontabili e ripartono da qui.
             self.data["baselines"] = {}
             self.data["meter"] = 2
+        for old_key in [k for k in self.data["baselines"] if k not in PARTS]:
+            del self.data["baselines"][old_key]
         self._ensure_baselines()
         self._prev_phase = self.phase
         self._prev_error = self.error_code
@@ -236,9 +239,14 @@ class ScoveHub:
 
         levels = {k: v["level"] for k, v in self.parts.items()}
         for key, level in levels.items():
-            if level != self._prev_levels.get(key) and level in ("soon", "due"):
-                when = "è da fare adesso" if level == "due" else "è quasi da fare"
-                self.alert(f"part_{key}", f"{PARTS[key]['name']}: {when}.", "manutenzione")
+            if level == self._prev_levels.get(key):
+                continue
+            todo = PARTS[key]["todo"]
+            if level == "due":
+                self.alert(f"part_{key}", f"{todo}.", "manutenzione")
+            elif level == "soon" and not PARTS[key].get("routine"):
+                hours = self.parts[key]["remaining"]
+                self.alert(f"part_{key}", f"{todo}: mancano circa {hours:g} ore di lavoro.", "manutenzione")
         self._prev_levels = levels
         self._notify_entities()
 
@@ -249,9 +257,16 @@ class ScoveHub:
                 "started": dt_util.now().isoformat(), "ended": None,
                 "rooms": (mission or {}).get("pending_rooms") or [],
                 "initiator": self.mission_status.get("initiator"), "stuck": 0,
+                "schedule": self._pending_schedule,
             }
+            self._pending_schedule = None
             self.data["trail"] = []
             self._pos_blocked = False
+            started = self.data["mission"]
+            what = f" per il programma «{started['schedule']}»" if started["schedule"] else ""
+            where = f" ({', '.join(started['rooms'])})" if started["rooms"] else ""
+            if (self.data.get("settings") or {}).get("notify_start", True):
+                self.alert("start", f"Pulizia avviata{what}{where}.", "info")
         if new == "stuck":
             if self.data.get("mission"):
                 self.data["mission"]["stuck"] = self.data["mission"].get("stuck", 0) + 1
@@ -277,9 +292,10 @@ class ScoveHub:
             self.data["coverage"][cell] = self.data["coverage"].get(cell, 0) + 1
         self.data["history"] = ([dict(mission)] + (self.data.get("history") or []))[:MAX_HISTORY]
         if (self.data.get("settings") or {}).get("notify_done", True):
+            what = f" del programma «{mission['schedule']}»" if mission.get("schedule") else ""
             self.alert(
                 "done",
-                f"Pulizia {mission['result']}: {mission['area_m2']} m² in {mission['minutes'] or '?'} min.",
+                f"Pulizia{what} {mission['result']}: {mission['area_m2']} m² in {mission['minutes'] or '?'} min.",
                 "info",
             )
         self._save_soon()
@@ -454,12 +470,14 @@ class ScoveHub:
         if reason:
             self.alert("schedule", f"«{name}» saltato: {reason}.", "programma")
             return
+        self._pending_schedule = name
         try:
             if schedule.get("rooms"):
                 await self.async_clean_rooms(rooms=schedule["rooms"])
             else:
                 await self.async_command("start")
         except HomeAssistantError as err:
+            self._pending_schedule = None
             self.alert("schedule", f"«{name}» non partito: {err}", "programma")
 
     # ── avvisi ─────────────────────────────────────────────────────────

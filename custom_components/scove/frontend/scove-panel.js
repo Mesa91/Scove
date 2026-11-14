@@ -92,7 +92,6 @@ class ScovePanel extends HTMLElement {
   // ── Comandi ───────────────────────────────────────────────────────
   _tabCmd(s) {
     const rooms = [...(s.map?.rooms || []), ...(s.map?.zones || [])];
-    const areas = Object.values(this._hass.areas || {});
     return `<div class="grid">
       <div class="card"><h2>Stato</h2>
         <div class="big">${esc(s.phase_label)}</div>
@@ -108,12 +107,7 @@ class ScovePanel extends HTMLElement {
         ${rooms.length ? `<div class="row">${rooms.map((r) => `<button class="chip ${this._sel.has(r.id + r.type) ? "on" : ""}" data-room="${esc(r.id + r.type)}">${esc(r.label || r.name)}</button>`).join("")}</div>
         <div class="row" style="margin-top:14px"><button class="primary" id="go-rooms" ${this._sel.size ? "" : "disabled"}>Manda nelle stanze scelte</button></div>`
         : `<p class="muted">Mappa non ancora scaricata dal cloud iRobot. ${esc(s.cloud_error || "")}</p><button data-cmd="refresh_map">Riprova</button>`}
-      </div></div>
-      ${rooms.length ? `<div class="card"><h2>Stanze del robot → aree di Home Assistant</h2>
-        <p class="muted">Associa ogni stanza della mappa del robot a un'area di HA: potrai usarle in automazioni e comandi (servizio scove.clean_rooms con «areas»).</p>
-        ${(s.map.rooms || []).map((r) => `<div class="row sp" style="margin:6px 0"><span>${esc(r.name)}</span>
-          <select data-area="${esc(r.id)}"><option value="">— nessuna —</option>${areas.map((a) => `<option value="${esc(a.area_id)}" ${s.room_areas[r.id] === a.area_id ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select></div>`).join("")}
-      </div>` : ""}`;
+      </div></div>`;
   }
 
   // ── Programma ─────────────────────────────────────────────────────
@@ -221,7 +215,6 @@ class ScovePanel extends HTMLElement {
       this._sel.clear();
       this._cmd("clean_rooms", { rooms: ids });
     };
-    q("[data-area]").forEach((el) => (el.onchange = () => this._save("room_areas", { ...s.room_areas, [el.dataset.area]: el.value })));
     q("[data-part]").forEach((b) => (b.onclick = () => this._cmd("reset_part", { part: b.dataset.part })));
 
     const sched = () => JSON.parse(JSON.stringify(s.schedules));

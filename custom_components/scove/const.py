@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 DOMAIN = "scove"
-VERSION = "1.0.4"
+VERSION = "1.0.5"
 PLATFORMS = ["vacuum", "sensor", "binary_sensor", "button"]
 
 CONF_BLID = "blid"

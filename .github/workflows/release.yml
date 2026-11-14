@@ -1,0 +1,27 @@
+name: Pubblica versione
+
+# Crea la release vX.Y.Z quando cambia la versione nel manifest.
+on:
+  push:
+    branches: [main]
+    paths: [custom_components/scove/manifest.json]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Crea la release se manca
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="v$(jq -r .version custom_components/scove/manifest.json)"
+          if gh release view "$version" >/dev/null 2>&1; then
+            echo "La release $version esiste già"
+          else
+            gh release create "$version" --target "$GITHUB_SHA" --title "Scove ${version#v}" --generate-notes
+          fi

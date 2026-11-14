@@ -107,7 +107,9 @@ class ScovePanel extends HTMLElement {
         ${rooms.length ? `<div class="row">${rooms.map((r) => `<button class="chip ${this._sel.has(r.id + r.type) ? "on" : ""}" data-room="${esc(r.id + r.type)}">${esc(r.label || r.name)}</button>`).join("")}</div>
         <div class="row" style="margin-top:14px"><button class="primary" id="go-rooms" ${this._sel.size ? "" : "disabled"}>Manda nelle stanze scelte</button></div>`
         : `<p class="muted">Mappa non ancora scaricata dal cloud iRobot. ${esc(s.cloud_error || "")}</p><button data-cmd="refresh_map">Riprova</button>`}
-      </div></div>`;
+      </div>
+      ${(s.room_days || []).length ? `<div class="card"><h2>Ultima pulizia per stanza</h2><div class="list">${s.room_days.map((d) => `<div class="row sp"><span>${esc(d.label)}</span><span class="muted">${d.never ? "non ancora registrata" : d.days === 0 ? "oggi" : d.days === 1 ? "ieri" : d.days + " giorni fa"}</span></div>`).join("")}</div></div>` : ""}
+      </div>`;
   }
 
   // ── Programma ─────────────────────────────────────────────────────
@@ -199,6 +201,14 @@ class ScovePanel extends HTMLElement {
           Batteria minima per partire (%) <input type="number" data-set="min_battery" value="${s.settings.min_battery}">
           <button class="chip ${s.settings.notify_start ? "on" : ""}" id="notify-start">Avviso alla partenza</button>
           <button class="chip ${s.settings.notify_done ? "on" : ""}" id="notify-done">Avviso a fine pulizia</button></div></div>
+      <div class="card"><h2>Funzioni aggiuntive</h2>
+        <p class="muted">Tutte spente finché non le accendi. Toccale per attivarle o disattivarle.</p>
+        ${[["action_buttons", "Pulsanti negli avvisi", "Dieci minuti prima di un programma arriva un avviso con «Rimanda di un'ora» e «Salta oggi»; alla partenza, «Torna alla base»."],
+           ["retry", "Nuovo tentativo", "Se un programma non può partire (robot occupato, contenitore pieno, batteria scarica) riprova ogni 30 minuti, fino a 4 volte."],
+           ["stuck_details", "Bloccato: stanza e mappa", "L'avviso di robot bloccato dice in quale stanza si trova e allega la mappa con il punto."],
+           ["map_backup", "Copia della mappa", `Salva una copia di stanze e zone a ogni modifica della mappa (cartella scove_backups di Home Assistant).${s.backup_version ? " Ultima copia: versione " + esc(s.backup_version) + "." : ""}`],
+          ].map(([k, n, d]) => `<div class="row sp" style="margin:10px 0;align-items:flex-start"><span style="flex:1"><b>${n}</b><br><span class="muted">${d}</span></span><button class="chip ${s.settings[k] ? "on" : ""}" data-toggle="${k}">${s.settings[k] ? "Accesa" : "Spenta"}</button></div>`).join("")}
+        <div class="row sp" style="margin:10px 0;align-items:flex-start"><span style="flex:1"><b>Stanze trascurate</b><br><span class="muted">Avviso alle 9:00 se una stanza non viene pulita da questo numero di giorni. 0 = spento.</span></span><input type="number" min="0" data-set="stale_days" value="${s.settings.stale_days || 0}"></div></div>
       <div class="card"><h2>Avvisi recenti</h2><div class="list">${s.alerts.length ? s.alerts.map((a) => `<div><span class="pill ${a.kind === "problema" ? "due" : a.kind === "info" ? "ok" : "soon"}">${esc(a.kind)}</span> ${esc(a.message)} <span class="muted">· ${fmtDate(a.time)}</span></div>`).join("") : `<div class="muted">Nessun avviso.</div>`}</div></div>`;
   }
 
@@ -262,6 +272,7 @@ class ScovePanel extends HTMLElement {
     }
 
     q("[data-set]").forEach((el) => (el.onchange = () => this._save("settings", { ...s.settings, [el.dataset.set]: el.type === "number" ? Number(el.value) : el.value })));
+    q("[data-toggle]").forEach((el) => (el.onclick = () => this._save("settings", { ...s.settings, [el.dataset.toggle]: !s.settings[el.dataset.toggle] })));
     const ns = one("#notify-start");
     if (ns) ns.onclick = () => this._save("settings", { ...s.settings, notify_start: !s.settings.notify_start });
     const nd = one("#notify-done");

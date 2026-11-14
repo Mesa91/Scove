@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+import json
 import logging
+from pathlib import Path
 import time
 import uuid
 from typing import Any
@@ -32,7 +34,26 @@ _LOGGER = logging.getLogger(__name__)
 MAX_TRAIL = 6000
 MAX_HISTORY = 30
 MAX_ALERTS = 60
-DEFAULT_SETTINGS = {"notify_service": "", "min_battery": 30, "notify_done": True, "notify_start": True}
+MAX_BACKUPS = 10
+MAX_RETRIES = 4
+RETRY_MINUTES = 30
+PRENOTICE_MINUTES = 10
+DEFAULT_SETTINGS = {
+    "notify_service": "", "min_battery": 30, "notify_done": True, "notify_start": True,
+    # Funzioni facoltative: spente finché non le accendi dal pannello.
+    "action_buttons": False, "retry": False, "stuck_details": False,
+    "stale_days": 0, "map_backup": False,
+}
+
+
+def _write_backup(folder: str, name: str, payload: dict[str, Any]) -> None:
+    path = Path(folder)
+    path.mkdir(parents=True, exist_ok=True)
+    (path / name).write_text(json.dumps(payload), encoding="utf-8")
+    prefix = name.split("_")[0]
+    old = sorted(path.glob(f"{prefix}_*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+    for extra in old[MAX_BACKUPS:]:
+        extra.unlink(missing_ok=True)
 
 
 class ScoveHub:
@@ -74,7 +95,8 @@ class ScoveHub:
             "calibration": {"dx": 0, "dy": 0, "rotation": 0, "mirror": False},
             "settings": dict(DEFAULT_SETTINGS), "map": None, "trail": [],
             "coverage": {}, "history": [], "alerts": [], "mission": None,
-            "peak_cap": None,
+            "peak_cap": None, "deferred": [], "skips": {},
+            "room_last": {}, "room_since": {}, "backup_version": None,
             **stored,
         }
         self.data["settings"] = {**DEFAULT_SETTINGS, **(self.data.get("settings") or {})}
@@ -105,6 +127,9 @@ class ScoveHub:
         self._prev_levels = {k: v["level"] for k, v in self.parts.items()}
 
         self._unsubs.append(async_track_time_change(self.hass, self._tick, second=0))
+        self._unsubs.append(
+            self.hass.bus.async_listen("mobile_app_notification_action", self._on_action)
+        )
         self._unsubs.append(
             async_track_time_interval(self.hass, self._refresh_cloud_job, timedelta(hours=6))
         )
@@ -181,6 +206,12 @@ class ScoveHub:
             "zones": [{**z, "label": z["name"]} for z in robot_map.get("zones") or []],
         }
 
+    def room_days(self) -> list[dict[str, Any]]:
+        rooms = (self.labelled_map() or {}).get("rooms") or []
+        return logic.room_days(
+            rooms, self.data.get("room_last") or {}, self.data.get("room_since") or {}, dt_util.now()
+        )
+
     def snapshot(self) -> dict[str, Any]:
         """Tutto quello che serve al pannello."""
         rep = self.reported
@@ -205,6 +236,9 @@ class ScoveHub:
             "mission": self.data.get("mission"), "history": self.data.get("history") or [],
             "schedules": self.data.get("schedules") or [], "zones": self.data.get("zones") or [],
             "room_areas": self.data.get("room_areas") or {},
+            "room_days": self.room_days(),
+            "deferred": self.data.get("deferred") or [],
+            "backup_version": self.data.get("backup_version"),
             "calibration": self.data.get("calibration") or {},
             "settings": self.data.get("settings") or {},
             "alerts": self.data.get("alerts") or [],
@@ -273,6 +307,7 @@ class ScoveHub:
             self.data["mission"] = {
                 "started": dt_util.now().isoformat(), "ended": None,
                 "rooms": (mission or {}).get("pending_rooms") or [],
+                "room_ids": (mission or {}).get("pending_room_ids"),
                 "initiator": self.mission_status.get("initiator"), "stuck": 0,
                 "schedule": self._pending_schedule,
             }
@@ -282,12 +317,23 @@ class ScoveHub:
             started = self.data["mission"]
             what = f" per il programma «{started['schedule']}»" if started["schedule"] else ""
             where = f" ({', '.join(started['rooms'])})" if started["rooms"] else ""
-            if (self.data.get("settings") or {}).get("notify_start", True):
-                self.alert("start", f"Pulizia avviata{what}{where}.", "info")
+            settings = self.data.get("settings") or {}
+            if settings.get("notify_start", True):
+                self.alert(
+                    "start", f"Pulizia avviata{what}{where}.", "info",
+                    actions=[("dock", "Torna alla base")] if settings.get("action_buttons") else None,
+                )
         if new == "stuck":
             if self.data.get("mission"):
                 self.data["mission"]["stuck"] = self.data["mission"].get("stuck", 0) + 1
-            self.alert("stuck", "Il robot è bloccato e ha bisogno di aiuto.", "problema")
+            message, image = "Il robot è bloccato e ha bisogno di aiuto.", None
+            if (self.data.get("settings") or {}).get("stuck_details"):
+                rooms = (self.labelled_map() or {}).get("rooms") or []
+                room = logic.room_at(self.position["x"], self.position["y"], rooms) if self.position else None
+                if room:
+                    message = f"Il robot è bloccato in {room['label']} e ha bisogno di aiuto."
+                image = f"/api/{DOMAIN}/{self.blid}/map.png?t={int(time.time())}"
+            self.alert("stuck", message, "problema", image=image)
         if new in MOVING_PHASES:
             self._start_position()
         else:
@@ -307,6 +353,11 @@ class ScoveHub:
         mission["result"] = "errore" if self.error_code else "completata" if self.phase == "charge" else "interrotta"
         for cell in {logic.cell_of(p[0], p[1]) for p in self.data.get("trail") or []}:
             self.data["coverage"][cell] = self.data["coverage"].get(cell, 0) + 1
+        if mission["result"] == "completata":
+            all_rooms = [r["id"] for r in (self.data.get("map") or {}).get("rooms") or []]
+            cleaned = mission.get("room_ids") if mission.get("rooms") else all_rooms
+            for room_id in cleaned or []:
+                self.data["room_last"][room_id] = mission["ended"]
         self.data["history"] = ([dict(mission)] + (self.data.get("history") or []))[:MAX_HISTORY]
         if (self.data.get("settings") or {}).get("notify_done", True):
             what = f" del programma «{mission['schedule']}»" if mission.get("schedule") else ""
@@ -374,6 +425,19 @@ class ScoveHub:
             parsed = parse_map(pmaps, umfs)
             if parsed:
                 self.data["map"] = parsed
+                now_iso = dt_util.now().isoformat()
+                for room in parsed.get("rooms") or []:
+                    self.data["room_since"].setdefault(room["id"], now_iso)
+                if (
+                    (self.data.get("settings") or {}).get("map_backup")
+                    and parsed.get("version") and parsed["version"] != self.data.get("backup_version")
+                ):
+                    await self.hass.async_add_executor_job(
+                        _write_backup, self.hass.config.path("scove_backups"),
+                        f"{self.blid[:8]}_{parsed['version']}.json",
+                        {"saved": now_iso, "pmaps": pmaps, "umf": umfs},
+                    )
+                    self.data["backup_version"] = parsed["version"]
                 self._save_soon()
             self.cloud_error = None
         except CloudError as err:
@@ -424,6 +488,7 @@ class ScoveHub:
             raise HomeAssistantError("Il robot non è raggiungibile")
         mission = self.data.get("mission") or {"ended": "x"}
         mission["pending_rooms"] = [self.room_label(r) for r in regions]
+        mission["pending_room_ids"] = [r["id"] for r in regions if r["type"] == "rid"]
         self.data["mission"] = mission
         await self.client.send_command("start", {
             "ordered": 1 if ordered else 0,
@@ -445,9 +510,13 @@ class ScoveHub:
         if key == "schedules":
             for item in value:
                 item.setdefault("id", uuid.uuid4().hex[:8])
+        backup_on = False
         if key == "settings":
             value = {**DEFAULT_SETTINGS, **value}
+            backup_on = bool(value.get("map_backup")) and not (self.data.get("settings") or {}).get("map_backup")
         self.data[key] = value
+        if backup_on:
+            self.entry.async_create_background_task(self.hass, self.async_refresh_cloud(), "scove_backup")
         self._save_soon()
         self._notify_entities()
 
@@ -461,9 +530,43 @@ class ScoveHub:
     async def _tick(self, now: Any) -> None:
         local = dt_util.as_local(now)
         hhmm = local.strftime("%H:%M")
-        for schedule in self.data.get("schedules") or []:
-            if logic.schedule_due(schedule, local.weekday(), hhmm):
+        settings = self.data.get("settings") or {}
+        schedules = self.data.get("schedules") or []
+        today = local.date().isoformat()
+        skips = self.data.setdefault("skips", {})
+        deferred = self.data.setdefault("deferred", [])
+        for sid in [k for k, day in skips.items() if day != today]:
+            del skips[sid]
+        for schedule in schedules:
+            if not logic.schedule_due(schedule, local.weekday(), hhmm):
+                continue
+            sid, name = schedule.get("id"), schedule.get("name") or "Programma"
+            if skips.pop(sid, None):
+                self.alert("schedule", f"«{name}» saltato per oggi, come richiesto.", "programma")
+            elif any(d["id"] == sid and d.get("postponed") for d in deferred):
+                continue  # rimandato dall'avviso: parte più tardi
+            else:
                 await self._run_schedule(schedule)
+        if settings.get("action_buttons"):
+            ahead = local + timedelta(minutes=PRENOTICE_MINUTES)
+            for schedule in schedules:
+                if logic.schedule_due(schedule, ahead.weekday(), ahead.strftime("%H:%M")):
+                    sid, name = schedule.get("id"), schedule.get("name") or "Programma"
+                    self.alert(
+                        "prenotice", f"Tra {PRENOTICE_MINUTES} minuti parte «{name}».", "info",
+                        actions=[(f"postpone:{sid}", "Rimanda di un'ora"), (f"skip:{sid}", "Salta oggi")],
+                    )
+        for item in [d for d in deferred if d["at"] <= local.timestamp()]:
+            deferred.remove(item)
+            schedule = next((s for s in schedules if s.get("id") == item["id"]), None)
+            if schedule and schedule.get("enabled", True):
+                await self._run_schedule(schedule, item.get("attempt", 0))
+            self._dirty = True
+        stale_days = int(settings.get("stale_days") or 0)
+        if stale_days > 0 and hhmm == "09:00":
+            stale = logic.stale_rooms(self.room_days(), stale_days)
+            if stale:
+                self.alert("stale", f"Non pulite da almeno {stale_days} giorni: {', '.join(stale)}.", "manutenzione")
         if (
             self._offline_since is not None and not self._offline_alerted
             and time.monotonic() - self._offline_since > 1800
@@ -474,7 +577,7 @@ class ScoveHub:
             self._dirty = False
             await self._store.async_save(self.data)
 
-    async def _run_schedule(self, schedule: dict[str, Any]) -> None:
+    async def _run_schedule(self, schedule: dict[str, Any], attempt: int = 0) -> None:
         name = schedule.get("name") or "Programma"
         battery = self.reported.get("batPct") or 0
         min_battery = (self.data.get("settings") or {}).get("min_battery", 30)
@@ -488,7 +591,20 @@ class ScoveHub:
         elif battery < min_battery:
             reason = f"la batteria è al {battery}%"
         if reason:
-            self.alert("schedule", f"«{name}» saltato: {reason}.", "programma")
+            if (self.data.get("settings") or {}).get("retry") and attempt < MAX_RETRIES:
+                deferred = self.data.setdefault("deferred", [])
+                deferred[:] = [d for d in deferred if d["id"] != schedule.get("id")]
+                deferred.append({
+                    "id": schedule.get("id"), "attempt": attempt + 1,
+                    "at": dt_util.now().timestamp() + RETRY_MINUTES * 60 - 5,
+                })
+                self.alert(
+                    "schedule",
+                    f"«{name}» rimandato: {reason}. Riprovo tra {RETRY_MINUTES} minuti "
+                    f"(tentativo {attempt + 1} di {MAX_RETRIES}).", "programma",
+                )
+            else:
+                self.alert("schedule", f"«{name}» saltato: {reason}.", "programma")
             return
         self._pending_schedule = name
         try:
@@ -500,9 +616,55 @@ class ScoveHub:
             self._pending_schedule = None
             self.alert("schedule", f"«{name}» non partito: {err}", "programma")
 
+    # ── pulsanti negli avvisi ──────────────────────────────────────────
+
+    @callback
+    def _on_action(self, event: Any) -> None:
+        """Un pulsante premuto in una notifica sul telefono."""
+        action = str(event.data.get("action") or "")
+        prefix = f"SCOVE:{self.blid}:"
+        if not action.startswith(prefix):
+            return
+        verb, _, arg = action[len(prefix):].partition(":")
+        self.hass.async_create_task(self._handle_action(verb, arg))
+
+    async def _handle_action(self, verb: str, arg: str) -> None:
+        if verb == "dock":
+            try:
+                await self.async_command("dock")
+            except HomeAssistantError as err:
+                self.alert("action", f"Rientro alla base non riuscito: {err}", "programma")
+            return
+        schedule = next((s for s in self.data.get("schedules") or [] if s.get("id") == arg), None)
+        if schedule is None or verb not in ("postpone", "skip"):
+            return
+        name = schedule.get("name") or "Programma"
+        now = dt_util.now()
+        try:
+            hh, mm = (int(v) for v in str(schedule.get("time")).split(":"))
+        except ValueError:
+            return
+        planned = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if planned < now - timedelta(seconds=30):
+            self.alert("action", f"«{name}» è già partito: usa «Torna alla base» per fermarlo.", "info")
+            return
+        if verb == "skip":
+            self.data.setdefault("skips", {})[arg] = now.date().isoformat()
+            self.alert("action", f"«{name}» oggi non parte.", "info")
+        else:
+            later = planned + timedelta(hours=1)
+            deferred = self.data.setdefault("deferred", [])
+            deferred[:] = [d for d in deferred if d["id"] != arg]
+            deferred.append({"id": arg, "attempt": 0, "postponed": True, "at": later.timestamp() - 5})
+            self.alert("action", f"«{name}» rimandato alle {later.strftime('%H:%M')}.", "info")
+        self._save_soon()
+
     # ── avvisi ─────────────────────────────────────────────────────────
 
-    def alert(self, key: str, message: str, kind: str) -> None:
+    def alert(
+        self, key: str, message: str, kind: str,
+        actions: list[tuple[str, str]] | None = None, image: str | None = None,
+    ) -> None:
         name = self.reported.get("name") or self.entry.title
         entry = {"time": dt_util.now().isoformat(), "key": key, "kind": kind, "message": message}
         self.data["alerts"] = ([entry] + (self.data.get("alerts") or []))[:MAX_ALERTS]
@@ -515,9 +677,18 @@ class ScoveHub:
         if target:
             service = target.removeprefix("notify.")
             if self.hass.services.has_service("notify", service):
-                self.hass.async_create_task(
-                    self.hass.services.async_call("notify", service, {"title": name, "message": message})
-                )
+                payload: dict[str, Any] = {"title": name, "message": message}
+                extra: dict[str, Any] = {}
+                if actions:
+                    extra["actions"] = [
+                        {"action": f"SCOVE:{self.blid}:{verb}", "title": title} for verb, title in actions
+                    ]
+                    extra["tag"] = f"{DOMAIN}_{key}"
+                if image:
+                    extra["image"] = image
+                if extra:
+                    payload["data"] = extra
+                self.hass.async_create_task(self.hass.services.async_call("notify", service, payload))
         self._save_soon()
 
     # ── utilità ────────────────────────────────────────────────────────

@@ -9,7 +9,9 @@ import voluptuous as vol
 
 from homeassistant.components import panel_custom, websocket_api
 from homeassistant.components.frontend import add_extra_js_url
-from homeassistant.components.http import StaticPathConfig
+from aiohttp import web
+
+from homeassistant.components.http import KEY_HASS, HomeAssistantView, StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
@@ -17,6 +19,7 @@ from homeassistant.helpers import config_validation as cv, entity_registry as er
 
 from .const import DOMAIN, PLATFORMS, REMOVED_PARTS, VERSION
 from .hub import ScoveHub
+from .render import render_png
 
 _LOGGER = logging.getLogger(__name__)
 PANEL_URL = "/scove_static"
@@ -73,6 +76,7 @@ async def _async_setup_shared(hass: HomeAssistant) -> None:
     )
 
     add_extra_js_url(hass, f"{PANEL_URL}/scove-map-card.js?v={VERSION}")
+    hass.http.register_view(ScoveMapView())
 
     async def clean_rooms(call: ServiceCall) -> None:
         await _hub(hass).async_clean_rooms(
@@ -97,6 +101,24 @@ async def _async_setup_shared(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_get)
     websocket_api.async_register_command(hass, ws_command)
     websocket_api.async_register_command(hass, ws_save)
+
+
+class ScoveMapView(HomeAssistantView):
+    """La mappa con la posizione del robot come immagine, per gli avvisi sul telefono."""
+
+    url = "/api/scove/{blid}/map.png"
+    name = "api:scove:map"
+
+    async def get(self, request: web.Request, blid: str) -> web.Response:
+        hass = request.app[KEY_HASS]
+        for entry in hass.config_entries.async_loaded_entries(DOMAIN):
+            hub: ScoveHub = entry.runtime_data
+            if hub.blid == blid:
+                png = await hass.async_add_executor_job(
+                    render_png, hub.labelled_map(), list(hub.data.get("trail") or []), hub.position
+                )
+                return web.Response(body=png, content_type="image/png")
+        return web.Response(status=404)
 
 
 @websocket_api.websocket_command({vol.Required("type"): "scove/get"})

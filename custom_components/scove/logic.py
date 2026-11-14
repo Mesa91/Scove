@@ -135,3 +135,38 @@ def next_run(schedules: list[dict[str, Any]], now: Any) -> Any | None:
             if cand > now and (best is None or cand < best):
                 best = cand
     return best
+
+
+def room_at(x: float, y: float, rooms: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """La stanza della mappa che contiene il punto."""
+    for room in rooms:
+        polygon = room.get("polygon") or []
+        if len(polygon) >= 3 and point_in_polygon(x, y, polygon):
+            return room
+    return None
+
+
+def room_days(rooms: list[dict[str, Any]], last: dict[str, str], since: dict[str, str], now: Any) -> list[dict[str, Any]]:
+    """Per ogni stanza: giorni dall'ultima pulizia completata (o da quando la teniamo d'occhio)."""
+    import datetime as dt
+
+    out = []
+    for room in rooms:
+        stamp = last.get(room["id"]) or since.get(room["id"])
+        days = None
+        if stamp:
+            try:
+                days = max(0, (now - dt.datetime.fromisoformat(stamp)).days)
+            except (ValueError, TypeError):
+                days = None
+        out.append({
+            "id": room["id"], "label": room.get("label") or room.get("name"),
+            "days": days, "never": room["id"] not in last,
+        })
+    return out
+
+
+def stale_rooms(days: list[dict[str, Any]], limit: int) -> list[str]:
+    if limit <= 0:
+        return []
+    return [d["label"] for d in days if d["days"] is not None and d["days"] >= limit]

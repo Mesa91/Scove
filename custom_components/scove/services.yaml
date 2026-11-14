@@ -1,0 +1,34 @@
+clean_rooms:
+  name: Pulisci stanze
+  description: Manda il robot in una o più stanze, indicate per nome o tramite le aree di Home Assistant associate.
+  fields:
+    rooms:
+      name: Stanze
+      description: Nomi (o id) delle stanze sulla mappa del robot.
+      selector:
+        text:
+          multiple: true
+    areas:
+      name: Aree
+      description: Aree di Home Assistant associate alle stanze del robot.
+      selector:
+        area:
+          multiple: true
+    ordered:
+      name: Rispetta l'ordine
+      default: true
+      selector:
+        boolean:
+reset_part:
+  name: Conferma manutenzione
+  description: Azzera il contatore di un componente dopo averlo sostituito o pulito.
+  fields:
+    part:
+      name: Componente
+      required: true
+      selector:
+        select:
+          options: [filter, brushes, side_brush, bag, wheels, contacts, sensors]
+refresh_map:
+  name: Aggiorna mappa
+  description: Scarica di nuovo stanze e zone vietate dal cloud iRobot.

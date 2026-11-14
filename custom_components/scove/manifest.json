@@ -1,0 +1,14 @@
+{
+  "domain": "scove",
+  "name": "Scove",
+  "codeowners": ["@Mesa91"],
+  "config_flow": true,
+  "dependencies": ["http", "panel_custom", "persistent_notification"],
+  "documentation": "https://github.com/Mesa91/Scove",
+  "integration_type": "device",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/Mesa91/Scove/issues",
+  "loggers": ["roombapy"],
+  "requirements": ["roombapy>=2.0.2"],
+  "version": "1.0.0"
+}

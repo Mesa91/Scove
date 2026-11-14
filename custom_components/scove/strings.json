@@ -1,0 +1,18 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Collega il tuo Roomba",
+        "description": "Inserisci l'account iRobot (serve per leggere mappa, stanze e la password locale del robot) e l'indirizzo IP del robot nella rete di casa.",
+        "data": {"username": "Email iRobot", "password": "Password iRobot", "host": "Indirizzo IP del robot"}
+      },
+      "robot": {"title": "Quale robot?", "data": {"blid": "Robot"}}
+    },
+    "error": {
+      "invalid_auth": "Email o password iRobot non corretti.",
+      "cannot_connect": "Cloud iRobot non raggiungibile. Riprova tra poco.",
+      "no_robots": "Nessun robot trovato su questo account."
+    },
+    "abort": {"already_configured": "Questo robot è già configurato."}
+  }
+}

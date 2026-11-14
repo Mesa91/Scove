@@ -10,8 +10,24 @@ CELL_MM = 150
 
 
 def runtime_hours(reported: dict[str, Any]) -> float:
-    run = reported.get("bbrun") or {}
-    return float(run.get("hr") or 0) + float(run.get("min") or 0) / 60.0
+    """Ore di lavoro totali del robot.
+
+    La serie i/s/j le riporta in `runtimeStats`, la serie 900 in `bbrun`.
+    """
+    for key in ("runtimeStats", "bbrun"):
+        block = reported.get(key)
+        if isinstance(block, dict) and block.get("hr") is not None:
+            return float(block.get("hr") or 0) + float(block.get("min") or 0) / 60.0
+    return 0.0
+
+
+def battery_cycles(reported: dict[str, Any]) -> int | None:
+    """Cicli di ricarica: `bbchg3` sulla serie 900, `batInfo.cCount` sulla serie i/s/j."""
+    chg = reported.get("bbchg3") or {}
+    if "nLithChrg" in chg:
+        return int((chg.get("nLithChrg") or 0) + (chg.get("nNimhChrg") or 0))
+    count = (reported.get("batInfo") or {}).get("cCount")
+    return int(count) if count is not None else None
 
 
 def parts_status(now_hours: float, baselines: dict[str, float]) -> dict[str, dict[str, Any]]:

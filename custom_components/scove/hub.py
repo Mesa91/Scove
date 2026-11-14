@@ -89,9 +89,12 @@ class ScoveHub:
             while not self.reported.get("name") and not self.reported.get("batPct"):
                 await asyncio.sleep(0.5)
 
-        hours = logic.runtime_hours(self.reported)
-        for key in PARTS:
-            self.data["baselines"].setdefault(key, hours)
+        if self.data.get("meter") != 2:
+            # La 1.0.0 leggeva le ore da un campo che sulla serie i vale sempre 0:
+            # i riferimenti salvati allora non sono confrontabili e ripartono da qui.
+            self.data["baselines"] = {}
+            self.data["meter"] = 2
+        self._ensure_baselines()
         self._prev_phase = self.phase
         self._prev_error = self.error_code
         self._prev_bin_full = self.bin_full
@@ -173,7 +176,7 @@ class ScoveHub:
             "bin_full": self.bin_full, "bin_present": bool((rep.get("bin") or {}).get("present", True)),
             "rssi": (rep.get("signal") or {}).get("rssi"),
             "health": self.health, "battery_retention": self.battery_retention,
-            "battery_cycles": (rep.get("bbchg3") or {}).get("nLithChrg"),
+            "battery_cycles": logic.battery_cycles(rep),
             "parts": self.parts, "runtime_hours": round(logic.runtime_hours(rep), 1),
             "missions": rep.get("bbmssn") or {},
             "map": self.data.get("map"), "cloud_error": self.cloud_error,
@@ -199,8 +202,21 @@ class ScoveHub:
             self._offline_since = time.monotonic()
         self._notify_entities()
 
+    def _ensure_baselines(self) -> None:
+        """Fissa il punto di partenza dei contatori appena il robot comunica le ore."""
+        baselines = self.data["baselines"]
+        if len(baselines) >= len(PARTS):
+            return
+        hours = logic.runtime_hours(self.reported)
+        if hours <= 0:
+            return
+        for key in PARTS:
+            baselines.setdefault(key, hours)
+        self._dirty = True
+
     @callback
     def _on_message(self, _message: Any) -> None:
+        self._ensure_baselines()
         phase, error, full = self.phase, self.error_code, self.bin_full
         est = (self.reported.get("bbchg3") or {}).get("estCap")
         if est and est > (self.data.get("peak_cap") or 0):

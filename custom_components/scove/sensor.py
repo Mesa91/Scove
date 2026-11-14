@@ -26,7 +26,7 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
         S(hub, "battery_retention", "Capacità batteria", lambda h: h.battery_retention, PERCENTAGE,
           icon="mdi:battery-heart-variant", diag=True),
         S(hub, "battery_cycles", "Cicli batteria",
-          lambda h: (h.reported.get("bbchg3") or {}).get("nLithChrg"), icon="mdi:battery-sync", diag=True),
+          lambda h: logic.battery_cycles(h.reported), icon="mdi:battery-sync", diag=True),
         S(hub, "wifi", "Segnale Wi-Fi", lambda h: (h.reported.get("signal") or {}).get("rssi"), "dBm",
           SensorDeviceClass.SIGNAL_STRENGTH, diag=True),
         S(hub, "missions", "Missioni totali", lambda h: (h.reported.get("bbmssn") or {}).get("nMssn"),

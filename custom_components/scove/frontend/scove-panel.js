@@ -105,7 +105,7 @@ class ScovePanel extends HTMLElement {
           <button data-cmd="find">🔔 Trova</button><button data-cmd="evac">🗑 Svuota</button>
         </div></div>
       <div class="card"><h2>Pulisci stanze</h2>
-        ${rooms.length ? `<div class="row">${rooms.map((r) => `<button class="chip ${this._sel.has(r.id + r.type) ? "on" : ""}" data-room="${esc(r.id + r.type)}">${esc(r.name)}</button>`).join("")}</div>
+        ${rooms.length ? `<div class="row">${rooms.map((r) => `<button class="chip ${this._sel.has(r.id + r.type) ? "on" : ""}" data-room="${esc(r.id + r.type)}">${esc(r.label || r.name)}</button>`).join("")}</div>
         <div class="row" style="margin-top:14px"><button class="primary" id="go-rooms" ${this._sel.size ? "" : "disabled"}>Manda nelle stanze scelte</button></div>`
         : `<p class="muted">Mappa non ancora scaricata dal cloud iRobot. ${esc(s.cloud_error || "")}</p><button data-cmd="refresh_map">Riprova</button>`}
       </div></div>
@@ -130,7 +130,7 @@ class ScovePanel extends HTMLElement {
         <div class="row" style="margin-top:8px">${DAYS.map((d, n) => `<button class="chip ${(p.days || []).includes(n) ? "on" : ""}" data-s="${i}" data-day="${n}">${d}</button>`).join("")}</div>
         <div class="row" style="margin-top:8px"><span class="muted">Stanze:</span>
           <button class="chip ${(p.rooms || []).length ? "" : "on"}" data-s="${i}" data-all="1">Tutta la casa</button>
-          ${rooms.map((r) => `<button class="chip ${(p.rooms || []).includes(r.id) ? "on" : ""}" data-s="${i}" data-sroom="${esc(r.id)}">${esc(r.name)}</button>`).join("")}</div>
+          ${rooms.map((r) => `<button class="chip ${(p.rooms || []).includes(r.id) ? "on" : ""}" data-s="${i}" data-sroom="${esc(r.id)}">${esc(r.label || r.name)}</button>`).join("")}</div>
       </div>`).join("")}</div>`;
   }
 
@@ -182,7 +182,7 @@ class ScovePanel extends HTMLElement {
         ${this._layers.trail && s.trail.length > 1 ? `<polyline points="${poly(s.trail)}" fill="none" stroke="#4fd8ff" stroke-opacity=".38" stroke-width="340" stroke-linecap="round" stroke-linejoin="round"/>` : ""}
         ${(s.map?.keepouts || []).map((k) => `<polygon points="${poly(k)}" fill="url(#hatch)" stroke="#ff6b6b" stroke-width="30"/>`).join("")}
         ${s.zones.map((z, i) => `<rect data-zone="${i}" x="${Math.min(z.x1, z.x2)}" y="${-Math.max(z.y1, z.y2)}" width="${Math.abs(z.x2 - z.x1)}" height="${Math.abs(z.y2 - z.y1)}" fill="rgba(255,170,60,.28)" stroke="#ffb14a" stroke-width="35" stroke-dasharray="120 80" style="cursor:pointer"/>`).join("")}
-        ${(s.map?.rooms || []).map((r) => { if (r.polygon.length < 3) return ""; const cx = r.polygon.reduce((a, p) => a + p[0], 0) / r.polygon.length, cy = r.polygon.reduce((a, p) => a + p[1], 0) / r.polygon.length; return `<text x="${cx}" y="${-cy}" fill="#dbe9ff" font-size="${Math.max(170, b.w / 45)}" text-anchor="middle">${esc(r.name)}</text>`; }).join("")}
+        ${(s.map?.rooms || []).map((r) => { if (r.polygon.length < 3) return ""; const cx = r.polygon.reduce((a, p) => a + p[0], 0) / r.polygon.length, cy = r.polygon.reduce((a, p) => a + p[1], 0) / r.polygon.length; return `<text x="${cx}" y="${-cy}" fill="#dbe9ff" font-size="${Math.max(170, b.w / 45)}" text-anchor="middle">${esc(r.label || r.name)}</text>`; }).join("")}
         <circle cx="0" cy="0" r="120" fill="#ffd27a"/>
         ${s.position ? `<circle cx="${s.position.x}" cy="${-s.position.y}" r="170" fill="#fff" stroke="#2f74e6" stroke-width="60"/>` : ""}
         <rect id="ghost" fill="rgba(255,170,60,.3)" stroke="#ffb14a" stroke-width="35" visibility="hidden"/>
@@ -217,7 +217,7 @@ class ScovePanel extends HTMLElement {
     const go = one("#go-rooms");
     if (go) go.onclick = () => {
       const all = [...(s.map?.rooms || []), ...(s.map?.zones || [])];
-      const ids = all.filter((r) => this._sel.has(r.id + r.type)).map((r) => r.name);
+      const ids = all.filter((r) => this._sel.has(r.id + r.type)).map((r) => `${r.type}:${r.id}`);
       this._sel.clear();
       this._cmd("clean_rooms", { rooms: ids });
     };

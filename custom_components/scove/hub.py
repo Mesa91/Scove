@@ -13,6 +13,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_change, async_track_time_interval
@@ -164,6 +165,22 @@ class ScoveHub:
     def next_run(self) -> Any | None:
         return logic.next_run(self.data.get("schedules") or [], dt_util.now())
 
+    def room_label(self, room: dict[str, Any]) -> str:
+        """Nome mostrato per una stanza: l'area di Home Assistant associata, altrimenti quello del robot."""
+        area_id = (self.data.get("room_areas") or {}).get(room["id"]) if room.get("type") == "rid" else None
+        area = ar.async_get(self.hass).async_get_area(area_id) if area_id else None
+        return area.name if area else room["name"]
+
+    def labelled_map(self) -> dict[str, Any] | None:
+        robot_map = self.data.get("map")
+        if not robot_map:
+            return None
+        return {
+            **robot_map,
+            "rooms": [{**r, "label": self.room_label(r)} for r in robot_map.get("rooms") or []],
+            "zones": [{**z, "label": z["name"]} for z in robot_map.get("zones") or []],
+        }
+
     def snapshot(self) -> dict[str, Any]:
         """Tutto quello che serve al pannello."""
         rep = self.reported
@@ -182,7 +199,7 @@ class ScoveHub:
             "battery_cycles": logic.battery_cycles(rep),
             "parts": self.parts, "runtime_hours": round(logic.runtime_hours(rep), 1),
             "missions": rep.get("bbmssn") or {},
-            "map": self.data.get("map"), "cloud_error": self.cloud_error,
+            "map": self.labelled_map(), "cloud_error": self.cloud_error,
             "position": self.position, "trail": self.data.get("trail") or [],
             "coverage": self.data.get("coverage") or {}, "cell_mm": logic.CELL_MM,
             "mission": self.data.get("mission"), "history": self.data.get("history") or [],
@@ -386,7 +403,10 @@ class ScoveHub:
         area_set = set(areas or [])
         found = [
             c for c in candidates
-            if c["id"].casefold() in wanted or c["name"].casefold() in wanted
+            if f"{c['type']}:{c['id']}".casefold() in wanted
+            or (c["type"] == "rid" and c["id"].casefold() in wanted)
+            or c["name"].casefold() in wanted
+            or self.room_label(c).casefold() in wanted
             or (area_set and room_areas.get(c["id"]) in area_set)
         ]
         return found
@@ -403,7 +423,7 @@ class ScoveHub:
         if not self.connected:
             raise HomeAssistantError("Il robot non è raggiungibile")
         mission = self.data.get("mission") or {"ended": "x"}
-        mission["pending_rooms"] = [r["name"] for r in regions]
+        mission["pending_rooms"] = [self.room_label(r) for r in regions]
         self.data["mission"] = mission
         await self.client.send_command("start", {
             "ordered": 1 if ordered else 0,
@@ -503,7 +523,8 @@ class ScoveHub:
     # ── utilità ────────────────────────────────────────────────────────
 
     def _save_soon(self) -> None:
-        self._dirty = True
+        """Scrive su disco entro un paio di secondi (e comunque allo spegnimento di HA)."""
+        self._store.async_delay_save(lambda: self.data, 2)
 
     def _notify_entities(self) -> None:
         async_dispatcher_send(self.hass, SIGNAL_UPDATE.format(self.blid))

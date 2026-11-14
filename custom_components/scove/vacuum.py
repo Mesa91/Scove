@@ -44,7 +44,7 @@ class ScoveVacuum(ScoveEntity, StateVacuumEntity):
         robot_map = self.hub.data.get("map") or {}
         return {
             "fase": self.hub.phase,
-            "stanze": [r["name"] for r in robot_map.get("rooms") or []],
+            "stanze": [self.hub.room_label(r) for r in robot_map.get("rooms") or []],
             "salute": self.hub.health,
         }
 

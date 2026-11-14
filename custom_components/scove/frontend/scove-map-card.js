@@ -49,8 +49,7 @@ class ScoveMapCard extends HTMLElement {
   }
 
   _roomName(s, room) {
-    const area = (this._hass.areas || {})[s.room_areas?.[room.id]];
-    return area ? area.name : room.name;
+    return room.label || room.name;
   }
 
   _render() {

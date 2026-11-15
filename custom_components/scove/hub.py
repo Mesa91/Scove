@@ -222,6 +222,11 @@ class ScoveHub:
             "connected": self.connected, "battery": rep.get("batPct"),
             "phase": self.phase, "phase_label": PHASE_LABELS.get(self.phase, self.phase),
             "cycle": self.mission_status.get("cycle"),
+            "mission_minutes": self.mission_status.get("mssnM"),
+            "mission_sqft": self.mission_status.get("sqft"),
+            "initiator": self.mission_status.get("initiator"),
+            "last_command": (self.reported.get("lastCommand") or {}).get("command"),
+            "last_command_initiator": (self.reported.get("lastCommand") or {}).get("initiator"),
             "error": self.error_code,
             "error_text": logic.error_text(self.error_code) if self.error_code else None,
             "bin_full": self.bin_full, "bin_present": bool((rep.get("bin") or {}).get("present", True)),
@@ -283,6 +288,14 @@ class ScoveHub:
         # La missione è finita solo quando il robot è fermo e non ha più un ciclo in corso:
         # una sosta in base per ricaricarsi a metà pulizia non la chiude.
         mission = self.data.get("mission")
+        if mission and not mission.get("ended"):
+            # Il robot azzera minuti e superficie appena si ferma: teniamo l'ultimo valore visto.
+            status = self.mission_status
+            if (status.get("mssnM") or 0) > (mission.get("minutes") or 0):
+                mission["minutes"] = status["mssnM"]
+            area = round((status.get("sqft") or 0) * 0.0929, 1)
+            if area > (mission.get("area_m2") or 0):
+                mission["area_m2"] = area
         if (
             mission and not mission.get("ended") and phase in ("charge", "stop")
             and (self.mission_status.get("cycle") or "none") == "none"
@@ -353,8 +366,16 @@ class ScoveHub:
             return
         status = self.mission_status
         mission["ended"] = dt_util.now().isoformat()
-        mission["minutes"] = status.get("mssnM")
-        mission["area_m2"] = round((status.get("sqft") or 0) * 0.0929, 1)
+        mission["minutes"] = max(status.get("mssnM") or 0, mission.get("minutes") or 0)
+        mission["area_m2"] = max(round((status.get("sqft") or 0) * 0.0929, 1), mission.get("area_m2") or 0)
+        if not mission["minutes"]:
+            # Ripiego: il tempo trascorso dalla partenza.
+            try:
+                started = dt_util.parse_datetime(mission["started"])
+                mission["minutes"] = round((dt_util.now() - started).total_seconds() / 60)
+                mission["minutes_estimated"] = True
+            except (TypeError, ValueError):
+                pass
         mission["error"] = self.error_code
         mission["result"] = "errore" if self.error_code else "completata" if self.phase == "charge" else "interrotta"
         for cell in {logic.cell_of(p[0], p[1]) for p in self.data.get("trail") or []}:
@@ -369,7 +390,9 @@ class ScoveHub:
             what = f" del programma «{mission['schedule']}»" if mission.get("schedule") else ""
             self.alert(
                 "done",
-                f"Pulizia{what} {mission['result']}: {mission['area_m2']} m² in {mission['minutes'] or '?'} min.",
+                f"Pulizia{what} {mission['result']}"
+                + (f": {mission['area_m2']:g} m² in {mission['minutes']} min." if mission["area_m2"]
+                   else f" dopo {mission['minutes']} min." if mission["minutes"] else "."),
                 "info",
             )
         self._save_soon()

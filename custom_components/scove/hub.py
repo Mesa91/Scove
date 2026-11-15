@@ -83,6 +83,8 @@ class ScoveHub:
         self._offline_alerted = False
         self._dirty = False
         self._pending_schedule: str | None = None
+        self._over_since: float | None = None
+        self._recharging = False
 
     # ── avvio / arresto ────────────────────────────────────────────────
 
@@ -122,6 +124,7 @@ class ScoveHub:
             del self.data["baselines"][old_key]
         self._ensure_baselines()
         self._prev_phase = self.phase
+        self._recharging = self.recharging
         self._prev_error = self.error_code
         self._prev_bin_full = self.bin_full
         self._prev_levels = {k: v["level"] for k, v in self.parts.items()}
@@ -165,6 +168,17 @@ class ScoveHub:
     @property
     def phase(self) -> str:
         return self.mission_status.get("phase") or ""
+
+    @property
+    def recharging(self) -> bool:
+        """In base a ricaricarsi a metà pulizia: il ciclo è ancora aperto e poi riprende."""
+        return self.phase == "charge" and (self.mission_status.get("cycle") or "none") != "none"
+
+    @property
+    def phase_label(self) -> str:
+        if self.recharging:
+            return "In ricarica, poi riprende"
+        return PHASE_LABELS.get(self.phase, self.phase)
 
     @property
     def error_code(self) -> int:
@@ -220,7 +234,8 @@ class ScoveHub:
             "name": rep.get("name") or self.entry.title,
             "sku": rep.get("sku"), "firmware": rep.get("softwareVer"),
             "connected": self.connected, "battery": rep.get("batPct"),
-            "phase": self.phase, "phase_label": PHASE_LABELS.get(self.phase, self.phase),
+            "phase": self.phase, "phase_label": self.phase_label,
+            "recharging": self.recharging, "recharge_minutes": self.mission_status.get("rechrgM"),
             "cycle": self.mission_status.get("cycle"),
             "mission_minutes": self.mission_status.get("mssnM"),
             "mission_sqft": self.mission_status.get("sqft"),
@@ -296,11 +311,9 @@ class ScoveHub:
             area = round((status.get("sqft") or 0) * 0.0929, 1)
             if area > (mission.get("area_m2") or 0):
                 mission["area_m2"] = area
-        if (
-            mission and not mission.get("ended") and phase in ("charge", "stop")
-            and (self.mission_status.get("cycle") or "none") == "none"
-        ):
-            self._mission_ended()
+        if phase == "charge":
+            self._recharging = self.recharging
+        self._check_mission_over()
         if error != self._prev_error:
             if error:
                 self.alert("error", f"{logic.error_text(error)} (codice {error})", "problema")
@@ -322,9 +335,50 @@ class ScoveHub:
         self._prev_levels = levels
         self._notify_entities()
 
+    def _check_mission_over(self) -> None:
+        """Chiude la missione solo se il robot resta fermo e senza ciclo per un po':
+        mentre rientra per ricaricarsi passa per un attimo da uno stato che sembra la fine."""
+        mission = self.data.get("mission")
+        over = (
+            bool(mission) and not mission.get("ended") and self.phase in ("charge", "stop")
+            and (self.mission_status.get("cycle") or "none") == "none"
+        )
+        if not over:
+            self._over_since = None
+        elif self._over_since is None:
+            self._over_since = time.monotonic()
+        elif time.monotonic() - self._over_since >= 45:
+            self._over_since = None
+            self._recharging = False
+            self._mission_ended()
+
+    def _reopen_mission(self, mission: dict[str, Any]) -> None:
+        """Il robot riprende dopo la ricarica una pulizia che avevamo dato per chiusa."""
+        for cell in {logic.cell_of(p[0], p[1]) for p in self.data.get("trail") or []}:
+            left = self.data["coverage"].get(cell, 0) - 1
+            if left > 0:
+                self.data["coverage"][cell] = left
+            else:
+                self.data["coverage"].pop(cell, None)
+        history = self.data.get("history") or []
+        if history and history[0].get("started") == mission.get("started"):
+            self.data["history"] = history[1:]
+        for key in ("ended", "result", "error", "minutes_estimated"):
+            mission.pop(key, None)
+        mission["ended"] = None
+        mission["recharges"] = mission.get("recharges", 0) + 1
+
     def _phase_changed(self, old: str, new: str) -> None:
         mission = self.data.get("mission")
-        if new == "run" and (mission is None or mission.get("ended")):
+        if new == "run" and mission and self._recharging:
+            self._recharging = False
+            if mission.get("ended"):
+                self._reopen_mission(mission)
+            else:
+                mission["recharges"] = mission.get("recharges", 0) + 1
+            if (self.data.get("settings") or {}).get("notify_start", True):
+                self.alert("resume", "Ricarica finita: riprendo la pulizia.", "info")
+        elif new == "run" and (mission is None or mission.get("ended")):
             self.data["mission"] = {
                 "started": dt_util.now().isoformat(), "ended": None,
                 "rooms": (mission or {}).get("pending_rooms") or [],
@@ -596,6 +650,7 @@ class ScoveHub:
             stale = logic.stale_rooms(self.room_days(), stale_days)
             if stale:
                 self.alert("stale", f"Non pulite da almeno {stale_days} giorni: {', '.join(stale)}.", "manutenzione")
+        self._check_mission_over()
         if (
             self._offline_since is not None and not self._offline_alerted
             and time.monotonic() - self._offline_since > 1800

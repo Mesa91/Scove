@@ -18,7 +18,7 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
     S = ScoveSensor
     entities: list[SensorEntity] = [
         S(hub, "battery", "Batteria", lambda h: h.reported.get("batPct"), PERCENTAGE, SensorDeviceClass.BATTERY),
-        S(hub, "phase", "Stato", lambda h: PHASE_LABELS.get(h.phase, h.phase), icon="mdi:robot-vacuum"),
+        S(hub, "phase", "Stato", lambda h: h.phase_label, icon="mdi:robot-vacuum"),
         S(hub, "error", "Errore", lambda h: logic.error_text(h.error_code) if h.error_code else "Nessuno",
           icon="mdi:alert-circle-outline", attrs=lambda h: {"codice": h.error_code}),
         S(hub, "health", "Salute", lambda h: h.health, PERCENTAGE, icon="mdi:heart-pulse",

@@ -124,6 +124,17 @@ class ScoveHub:
         for old_key in [k for k in self.data["baselines"] if k not in PARTS]:
             del self.data["baselines"][old_key]
         self._ensure_baselines()
+        last = self.data.get("mission")
+        history = self.data.get("history") or []
+        if (
+            last and last.get("ended") and "coverage" not in last and history
+            and history[0].get("started") == last.get("started") and not last.get("error")
+        ):
+            # Giri chiusi prima della 1.0.11: registra ora le stanze dal percorso salvato.
+            missed = self._register_rooms(last)
+            if missed is not None:
+                last["result"] = "parziale" if missed else "completata"
+                history[0] = dict(last)
         self._prev_phase = self.phase
         self._recharging = self.recharging
         self._prev_error = self.error_code
@@ -422,6 +433,26 @@ class ScoveHub:
         else:
             self._stop_position()
 
+    def _register_rooms(self, mission: dict[str, Any]) -> list[str] | None:
+        """Segna come pulite le stanze davvero percorse. Restituisce i nomi di quelle previste
+        ma rimaste indietro, oppure None se non si può giudicare (niente mappa o solo zone)."""
+        rooms = (self.labelled_map() or {}).get("rooms") or []
+        trail = self.data.get("trail") or []
+        if not rooms or not trail:
+            return None
+        coverage = logic.room_coverage(trail, rooms)
+        wanted = mission.get("room_ids") if mission.get("rooms") else [r["id"] for r in rooms]
+        mission["coverage"] = {r["label"]: round(coverage.get(r["id"], 0) * 100) for r in rooms}
+        for room in rooms:
+            if coverage.get(room["id"], 0) >= logic.ROOM_DONE:
+                self.data["room_last"][room["id"]] = mission["ended"]
+        if not wanted:
+            return None
+        mission["missed"] = [
+            r["label"] for r in rooms if r["id"] in wanted and coverage.get(r["id"], 0) < logic.ROOM_DONE
+        ]
+        return mission["missed"]
+
     def _mission_ended(self) -> None:
         mission = self.data.get("mission")
         if not mission or mission.get("ended"):
@@ -440,14 +471,15 @@ class ScoveHub:
             self.data.get("trail") or []
         )
         mission["error"] = self.error_code
-        mission["result"] = "errore" if self.error_code else "completata" if self.phase == "charge" else "interrotta"
+        missed = self._register_rooms(mission)
+        if self.error_code:
+            mission["result"] = "errore"
+        elif missed is None:
+            mission["result"] = "completata" if self.phase == "charge" else "interrotta"
+        else:
+            mission["result"] = "parziale" if missed else "completata"
         for cell in {logic.cell_of(p[0], p[1]) for p in self.data.get("trail") or []}:
             self.data["coverage"][cell] = self.data["coverage"].get(cell, 0) + 1
-        if mission["result"] == "completata":
-            all_rooms = [r["id"] for r in (self.data.get("map") or {}).get("rooms") or []]
-            cleaned = mission.get("room_ids") if mission.get("rooms") else all_rooms
-            for room_id in cleaned or []:
-                self.data["room_last"][room_id] = mission["ended"]
         self.data["history"] = ([dict(mission)] + (self.data.get("history") or []))[:MAX_HISTORY]
         if (self.data.get("settings") or {}).get("notify_done", True):
             what = f" del programma «{mission['schedule']}»" if mission.get("schedule") else ""
@@ -455,7 +487,8 @@ class ScoveHub:
                 "done",
                 f"Pulizia{what} {mission['result']}"
                 + (f": circa {mission['area_m2']:g} m² in {mission['minutes']} min di lavoro." if mission["area_m2"]
-                   else f" dopo {mission['minutes']} min di lavoro." if mission["minutes"] else "."),
+                   else f" dopo {mission['minutes']} min di lavoro." if mission["minutes"] else ".")
+                + (f" Poco o per nulla pulite: {', '.join(mission['missed'])}." if mission.get("missed") else ""),
                 "info",
             )
         self._save_soon()

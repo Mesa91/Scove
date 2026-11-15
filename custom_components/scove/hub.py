@@ -84,6 +84,7 @@ class ScoveHub:
         self._dirty = False
         self._pending_schedule: str | None = None
         self._over_since: float | None = None
+        self._run_since: float | None = None
         self._recharging = False
 
     # ── avvio / arresto ────────────────────────────────────────────────
@@ -238,6 +239,7 @@ class ScoveHub:
             "recharging": self.recharging, "recharge_minutes": self.mission_status.get("rechrgM"),
             "cycle": self.mission_status.get("cycle"),
             "mission_minutes": self.mission_status.get("mssnM"),
+            "run_minutes": round(((self.data.get("mission") or {}).get("run_seconds") or 0) / 60),
             "mission_sqft": self.mission_status.get("sqft"),
             "initiator": self.mission_status.get("initiator"),
             "last_command": (self.reported.get("lastCommand") or {}).get("command"),
@@ -300,17 +302,9 @@ class ScoveHub:
         if phase != self._prev_phase:
             self._phase_changed(self._prev_phase, phase)
             self._prev_phase = phase
+        self._count_run_time()
         # La missione è finita solo quando il robot è fermo e non ha più un ciclo in corso:
         # una sosta in base per ricaricarsi a metà pulizia non la chiude.
-        mission = self.data.get("mission")
-        if mission and not mission.get("ended"):
-            # Il robot azzera minuti e superficie appena si ferma: teniamo l'ultimo valore visto.
-            status = self.mission_status
-            if (status.get("mssnM") or 0) > (mission.get("minutes") or 0):
-                mission["minutes"] = status["mssnM"]
-            area = round((status.get("sqft") or 0) * 0.0929, 1)
-            if area > (mission.get("area_m2") or 0):
-                mission["area_m2"] = area
         if phase == "charge":
             self._recharging = self.recharging
         self._check_mission_over()
@@ -334,6 +328,15 @@ class ScoveHub:
                 self.alert(f"part_{key}", f"{todo}: mancano circa {hours:g} ore di lavoro.", "manutenzione")
         self._prev_levels = levels
         self._notify_entities()
+
+    def _count_run_time(self) -> None:
+        """Cronometro di Scove: avanza solo mentre il robot pulisce (non in ricarica o in pausa)."""
+        mission = self.data.get("mission")
+        now = time.monotonic()
+        if self._run_since is not None and mission and not mission.get("ended"):
+            mission["run_seconds"] = round(mission.get("run_seconds", 0) + now - self._run_since, 1)
+            self._dirty = True
+        self._run_since = now if self.phase == "run" else None
 
     def _check_mission_over(self) -> None:
         """Chiude la missione solo se il robot resta fermo e senza ciclo per un po':
@@ -363,7 +366,12 @@ class ScoveHub:
         history = self.data.get("history") or []
         if history and history[0].get("started") == mission.get("started"):
             self.data["history"] = history[1:]
-        for key in ("ended", "result", "error", "minutes_estimated"):
+        if "run_seconds" not in mission:
+            started = dt_util.parse_datetime(mission.get("started") or "")
+            ended = dt_util.parse_datetime(mission.get("ended") or "")
+            if started and ended:
+                mission["run_seconds"] = round((ended - started).total_seconds(), 1)
+        for key in ("ended", "result", "error", "minutes_estimated", "minutes", "total_minutes", "area_m2"):
             mission.pop(key, None)
         mission["ended"] = None
         mission["recharges"] = mission.get("recharges", 0) + 1
@@ -420,16 +428,17 @@ class ScoveHub:
             return
         status = self.mission_status
         mission["ended"] = dt_util.now().isoformat()
-        mission["minutes"] = max(status.get("mssnM") or 0, mission.get("minutes") or 0)
-        mission["area_m2"] = max(round((status.get("sqft") or 0) * 0.0929, 1), mission.get("area_m2") or 0)
-        if not mission["minutes"]:
-            # Ripiego: il tempo trascorso dalla partenza.
-            try:
-                started = dt_util.parse_datetime(mission["started"])
-                mission["minutes"] = round((dt_util.now() - started).total_seconds() / 60)
-                mission["minutes_estimated"] = True
-            except (TypeError, ValueError):
-                pass
+        self._count_run_time()
+        started = dt_util.parse_datetime(mission.get("started") or "")
+        total = round((dt_util.now() - started).total_seconds() / 60) if started else None
+        run_seconds = mission.get("run_seconds")
+        # Minuti di pulizia effettiva, senza soste; se manca il cronometro, il tempo trascorso.
+        mission["minutes"] = round(run_seconds / 60) if run_seconds else (status.get("mssnM") or total or 0)
+        mission["total_minutes"] = total
+        reported_area = round((status.get("sqft") or 0) * 0.0929, 1)
+        mission["area_m2"] = max(reported_area, mission.get("area_m2") or 0) or logic.swept_area_m2(
+            self.data.get("trail") or []
+        )
         mission["error"] = self.error_code
         mission["result"] = "errore" if self.error_code else "completata" if self.phase == "charge" else "interrotta"
         for cell in {logic.cell_of(p[0], p[1]) for p in self.data.get("trail") or []}:
@@ -445,8 +454,8 @@ class ScoveHub:
             self.alert(
                 "done",
                 f"Pulizia{what} {mission['result']}"
-                + (f": {mission['area_m2']:g} m² in {mission['minutes']} min." if mission["area_m2"]
-                   else f" dopo {mission['minutes']} min." if mission["minutes"] else "."),
+                + (f": circa {mission['area_m2']:g} m² in {mission['minutes']} min di lavoro." if mission["area_m2"]
+                   else f" dopo {mission['minutes']} min di lavoro." if mission["minutes"] else "."),
                 "info",
             )
         self._save_soon()
@@ -650,6 +659,7 @@ class ScoveHub:
             stale = logic.stale_rooms(self.room_days(), stale_days)
             if stale:
                 self.alert("stale", f"Non pulite da almeno {stale_days} giorni: {', '.join(stale)}.", "manutenzione")
+        self._count_run_time()
         self._check_mission_over()
         if (
             self._offline_since is not None and not self._offline_alerted

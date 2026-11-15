@@ -170,3 +170,17 @@ def stale_rooms(days: list[dict[str, Any]], limit: int) -> list[str]:
     if limit <= 0:
         return []
     return [d["label"] for d in days if d["days"] is not None and d["days"] >= limit]
+
+
+def swept_area_m2(trail: list[list[float]], radius_mm: float = 165.0) -> float:
+    """Superficie coperta dal percorso: le celle entro mezzo robot da ogni punto registrato."""
+    cells: set[tuple[int, int]] = set()
+    reach = int(radius_mm // CELL_MM) + 1
+    for x, y in trail:
+        cx, cy = math.floor(x / CELL_MM), math.floor(y / CELL_MM)
+        for dx in range(-reach, reach + 1):
+            for dy in range(-reach, reach + 1):
+                mx, my = (cx + dx + 0.5) * CELL_MM, (cy + dy + 0.5) * CELL_MM
+                if (mx - x) ** 2 + (my - y) ** 2 <= radius_mm ** 2:
+                    cells.add((cx + dx, cy + dy))
+    return round(len(cells) * (CELL_MM / 1000.0) ** 2, 1)

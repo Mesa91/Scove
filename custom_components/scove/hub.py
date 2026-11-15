@@ -280,6 +280,14 @@ class ScoveHub:
         if phase != self._prev_phase:
             self._phase_changed(self._prev_phase, phase)
             self._prev_phase = phase
+        # La missione è finita solo quando il robot è fermo e non ha più un ciclo in corso:
+        # una sosta in base per ricaricarsi a metà pulizia non la chiude.
+        mission = self.data.get("mission")
+        if (
+            mission and not mission.get("ended") and phase in ("charge", "stop")
+            and (self.mission_status.get("cycle") or "none") == "none"
+        ):
+            self._mission_ended()
         if error != self._prev_error:
             if error:
                 self.alert("error", f"{logic.error_text(error)} (codice {error})", "problema")
@@ -338,8 +346,6 @@ class ScoveHub:
             self._start_position()
         else:
             self._stop_position()
-        if new in ("charge", "stop") and old in MISSION_PHASES:
-            self._mission_ended()
 
     def _mission_ended(self) -> None:
         mission = self.data.get("mission")

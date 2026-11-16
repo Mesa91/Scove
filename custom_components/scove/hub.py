@@ -124,6 +124,8 @@ class ScoveHub:
         for old_key in [k for k in self.data["baselines"] if k not in PARTS]:
             del self.data["baselines"][old_key]
         self._ensure_baselines()
+        if self.bin_full and not self.data.get("bin_fills"):
+            self._learn_bin_fill()  # già pieno all'avvio: vale come prima osservazione
         last = self.data.get("mission")
         history = self.data.get("history") or []
         if (
@@ -203,7 +205,8 @@ class ScoveHub:
     @property
     def parts(self) -> dict[str, dict[str, Any]]:
         return logic.parts_status(
-            logic.runtime_hours(self.reported), self.data.get("baselines") or {}, self.bin_full
+            logic.runtime_hours(self.reported), self.data.get("baselines") or {}, self.bin_full,
+            self.data.get("bin_fills") or [],
         )
 
     @property
@@ -326,6 +329,7 @@ class ScoveHub:
                 self.alert("error", f"{logic.error_text(error)} (codice {error})", "problema")
             self._prev_error = error
         if full and not self._prev_bin_full:
+            self._learn_bin_fill()
             self.alert("bin", "Contenitore pieno: va svuotato.", "problema")
         if self._prev_bin_full and not full and logic.runtime_hours(self.reported) > 0:
             # Contenitore svuotato: il conteggio delle ore riparte da qui, senza premere nulla.
@@ -342,6 +346,8 @@ class ScoveHub:
             todo = PARTS[key]["todo"]
             if level == "due":
                 self.alert(f"part_{key}", f"{todo}.", "manutenzione")
+            elif level == "soon" and key == "bin":
+                self.alert("part_bin", "Contenitore quasi pieno: svuotalo prima del prossimo giro.", "manutenzione")
             elif level == "soon" and not PARTS[key].get("routine"):
                 hours = self.parts[key]["remaining"]
                 self.alert(f"part_{key}", f"{todo}: mancano circa {hours:g} ore di lavoro.", "manutenzione")
@@ -356,6 +362,14 @@ class ScoveHub:
             mission["run_seconds"] = round(mission.get("run_seconds", 0) + now - self._run_since, 1)
             self._dirty = True
         self._run_since = now if self.phase == "run" else None
+
+    def _learn_bin_fill(self) -> None:
+        """Il robot dice solo pieno / non pieno: impariamo dopo quante ore di lavoro si riempie,
+        così la barra del contenitore segue la realtà di questa casa."""
+        used = logic.runtime_hours(self.reported) - (self.data.get("baselines") or {}).get("bin", 0)
+        if 0.2 < used < 50:
+            self.data["bin_fills"] = ((self.data.get("bin_fills") or []) + [round(used, 2)])[-8:]
+            self._save_soon()
 
     def _check_mission_over(self) -> None:
         """Chiude la missione solo se il robot resta fermo e senza ciclo per un po':

@@ -30,16 +30,29 @@ def battery_cycles(reported: dict[str, Any]) -> int | None:
     return int(count) if count is not None else None
 
 
-def parts_status(now_hours: float, baselines: dict[str, float], bin_full: bool = False) -> dict[str, dict[str, Any]]:
+def learned_bin_hours(fills: list[float]) -> float | None:
+    """Ore di lavoro che in media riempiono il contenitore, dagli ultimi riempimenti osservati."""
+    recent = [f for f in (fills or [])[-5:] if f > 0]
+    if not recent:
+        return None
+    return round(min(12.0, max(0.3, sum(recent) / len(recent))), 2)
+
+
+def parts_status(
+    now_hours: float, baselines: dict[str, float], bin_full: bool = False,
+    bin_fills: list[float] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Ore rimaste e livello (ok / soon / due) per ogni componente."""
     out: dict[str, dict[str, Any]] = {}
+    learned = learned_bin_hours(bin_fills or [])
     for key, part in PARTS.items():
+        hours = learned if key == "bin" and learned else part["hours"]
         used = max(0.0, now_hours - baselines.get(key, now_hours))
-        remaining = part["hours"] - used
-        ratio = used / part["hours"]
+        remaining = hours - used
+        ratio = used / hours
         level = "due" if remaining <= 0 else "soon" if ratio >= 0.8 else "ok"
         out[key] = {
-            "name": part["name"], "interval": part["hours"], "todo": part["todo"],
+            "name": part["name"], "interval": hours, "todo": part["todo"],
             "routine": bool(part.get("routine")),
             "remaining": round(remaining, 1), "used_pct": round(min(ratio, 1.5) * 100),
             "level": level,
@@ -47,6 +60,8 @@ def parts_status(now_hours: float, baselines: dict[str, float], bin_full: bool =
     if bin_full and "bin" in out:
         # Il sensore del robot vale più della stima a ore: se dice pieno, è da svuotare adesso.
         out["bin"].update({"remaining": 0.0, "used_pct": 100, "level": "due", "by_sensor": True})
+    if "bin" in out:
+        out["bin"]["learned_from"] = len([f for f in (bin_fills or [])[-5:] if f > 0])
     return out
 
 

@@ -747,10 +747,21 @@ class ScoveHub:
                     "id": schedule.get("id"), "attempt": attempt + 1,
                     "at": dt_util.now().timestamp() + RETRY_MINUTES * 60 - 5,
                 })
+                if attempt == 0:
+                    message = (
+                        f"«{name}» rimandato: {reason}. Riprovo ogni {RETRY_MINUTES} minuti, "
+                        f"fino a {MAX_RETRIES} volte."
+                    )
+                else:
+                    message = (
+                        f"«{name}» ancora fermo: {reason}. Nuovo tentativo tra {RETRY_MINUTES} minuti "
+                        f"({attempt + 1} di {MAX_RETRIES})."
+                    )
+                # Sul telefono solo il primo rinvio: i tentativi successivi restano nel registro di Scove.
+                self.alert("schedule", message, "programma", push=attempt == 0)
+            elif attempt:
                 self.alert(
-                    "schedule",
-                    f"«{name}» rimandato: {reason}. Riprovo tra {RETRY_MINUTES} minuti "
-                    f"(tentativo {attempt + 1} di {MAX_RETRIES}).", "programma",
+                    "schedule", f"«{name}» annullato per oggi dopo {attempt} tentativi: {reason}.", "programma"
                 )
             else:
                 self.alert("schedule", f"«{name}» saltato: {reason}.", "programma")
@@ -813,11 +824,15 @@ class ScoveHub:
     def alert(
         self, key: str, message: str, kind: str,
         actions: list[tuple[str, str]] | None = None, image: str | None = None,
+        push: bool = True,
     ) -> None:
         name = self.reported.get("name") or self.entry.title
         entry = {"time": dt_util.now().isoformat(), "key": key, "kind": kind, "message": message}
         self.data["alerts"] = ([entry] + (self.data.get("alerts") or []))[:MAX_ALERTS]
         self.hass.bus.async_fire(f"{DOMAIN}_alert", {"robot": name, **entry})
+        if not push:
+            self._save_soon()
+            return
         if kind != "info":
             persistent_notification.async_create(
                 self.hass, message, title=f"{name}", notification_id=f"{DOMAIN}_{self.blid}_{key}"

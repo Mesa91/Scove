@@ -142,7 +142,7 @@ class ScovePanel extends HTMLElement {
         <div class="row sp"><span>${esc(p.name)} <span class="pill ${p.level}">${p.level === "ok" ? "ok" : p.level === "soon" ? "a breve" : "da fare"}</span></span>
           <button class="small" data-part="${k}">Fatto</button></div>
         <div class="bar"><i class="${p.level}" style="width:${Math.min(100, p.used_pct)}%"></i></div>
-        <div class="muted">${p.remaining > 0 ? `ancora ${p.remaining} h di lavoro` : `superato di ${Math.abs(p.remaining)} h`} (ogni ${p.interval} h)</div></div>`).join("")}</div></div>
+        <div class="muted">${p.by_sensor ? "pieno secondo il robot: da svuotare adesso" : p.remaining > 0 ? `ancora ${p.remaining} h di lavoro` : `superato di ${Math.abs(p.remaining)} h`} (ogni ${p.interval} h)</div></div>`).join("")}</div></div>
       <div class="card"><h2>Ultime pulizie</h2><div class="list">${s.history.length ? s.history.map((h) => `<div>${fmtDate(h.started)} — <b>${esc(h.result)}</b> · ${h.area_m2 ?? "?"} m² · ${h.minutes ?? "?"} min di lavoro${(h.rooms || []).length ? " · " + esc(h.rooms.join(", ")) : ""}${h.stuck ? ` · bloccato ${h.stuck}×` : ""}${h.recharges ? ` · ${h.recharges} ricarica${h.recharges > 1 ? "he" : ""} a metà` : ""}${(h.missed || []).length ? ` · poco pulite: ${esc(h.missed.join(", "))}` : ""}${h.coverage ? `<br><span class="muted">${Object.entries(h.coverage).map(([n, v]) => `${esc(n)} ${v}%`).join(" · ")}</span>` : ""}</div>`).join("") : `<div class="muted">Ancora nessuna pulizia registrata da Scove.</div>`}</div></div>`;
   }
 

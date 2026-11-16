@@ -30,7 +30,7 @@ def battery_cycles(reported: dict[str, Any]) -> int | None:
     return int(count) if count is not None else None
 
 
-def parts_status(now_hours: float, baselines: dict[str, float]) -> dict[str, dict[str, Any]]:
+def parts_status(now_hours: float, baselines: dict[str, float], bin_full: bool = False) -> dict[str, dict[str, Any]]:
     """Ore rimaste e livello (ok / soon / due) per ogni componente."""
     out: dict[str, dict[str, Any]] = {}
     for key, part in PARTS.items():
@@ -44,6 +44,9 @@ def parts_status(now_hours: float, baselines: dict[str, float]) -> dict[str, dic
             "remaining": round(remaining, 1), "used_pct": round(min(ratio, 1.5) * 100),
             "level": level,
         }
+    if bin_full and "bin" in out:
+        # Il sensore del robot vale più della stima a ore: se dice pieno, è da svuotare adesso.
+        out["bin"].update({"remaining": 0.0, "used_pct": 100, "level": "due", "by_sensor": True})
     return out
 
 

@@ -202,7 +202,9 @@ class ScoveHub:
 
     @property
     def parts(self) -> dict[str, dict[str, Any]]:
-        return logic.parts_status(logic.runtime_hours(self.reported), self.data.get("baselines") or {})
+        return logic.parts_status(
+            logic.runtime_hours(self.reported), self.data.get("baselines") or {}, self.bin_full
+        )
 
     @property
     def battery_retention(self) -> float | None:
@@ -325,12 +327,18 @@ class ScoveHub:
             self._prev_error = error
         if full and not self._prev_bin_full:
             self.alert("bin", "Contenitore pieno: va svuotato.", "problema")
+        if self._prev_bin_full and not full and logic.runtime_hours(self.reported) > 0:
+            # Contenitore svuotato: il conteggio delle ore riparte da qui, senza premere nulla.
+            self.data["baselines"]["bin"] = logic.runtime_hours(self.reported)
+            self._save_soon()
         self._prev_bin_full = full
 
         levels = {k: v["level"] for k, v in self.parts.items()}
         for key, level in levels.items():
             if level == self._prev_levels.get(key):
                 continue
+            if key == "bin" and full:
+                continue  # già avvisato come «Contenitore pieno»
             todo = PARTS[key]["todo"]
             if level == "due":
                 self.alert(f"part_{key}", f"{todo}.", "manutenzione")

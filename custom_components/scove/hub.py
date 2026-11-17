@@ -33,7 +33,7 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 MAX_TRAIL = 6000
-MAX_HISTORY = 30
+MAX_HISTORY = 10
 MAX_ALERTS = 60
 MAX_BACKUPS = 10
 REOPEN_HOURS = 4  # una sosta di ricarica dura al massimo qualche ora: oltre, è un giro nuovo
@@ -71,6 +71,9 @@ class ScoveHub:
             entry.data[CONF_PASSWORD], entry.data.get(CONF_COUNTRY, "IT"),
         )
         self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{self.blid}")
+        # I percorsi dei giri passati stanno in un file a parte: sono grandi e cambiano di rado.
+        self._tracks_store: Store = Store(hass, 1, f"{DOMAIN}.{self.blid}.tracks")
+        self.tracks: dict[str, list[list[int]]] = {}
         self.data: dict[str, Any] = {}
         self.position: dict[str, float] | None = None
         self.cloud_error: str | None = None
@@ -95,6 +98,7 @@ class ScoveHub:
         from roombapy import RoombaClient, TransportOptions, generate_tls_context
 
         stored = await self._store.async_load() or {}
+        self.tracks = ((await self._tracks_store.async_load()) or {}).get("tracks") or {}
         self.data = {
             "schedules": [], "zones": [], "room_areas": {}, "baselines": {},
             "calibration": {"dx": 0, "dy": 0, "rotation": 0, "mirror": False},
@@ -167,6 +171,7 @@ class ScoveHub:
         if self.client is not None:
             await self.client.disconnect()
         await self._store.async_save(self.data)
+        await self._tracks_store.async_save({"tracks": self.tracks})
 
     # ── stato ──────────────────────────────────────────────────────────
 
@@ -290,7 +295,8 @@ class ScoveHub:
             "map": self.labelled_map(), "cloud_error": self.cloud_error,
             "position": self.position, "trail": self.data.get("trail") or [],
             "coverage": self.data.get("coverage") or {}, "cell_mm": logic.CELL_MM,
-            "mission": self.data.get("mission"), "history": self.data.get("history") or [],
+            "mission": self.data.get("mission"),
+            "history": [{**h, "has_track": h.get("started") in self.tracks} for h in self.data.get("history") or []],
             "schedules": self.data.get("schedules") or [], "zones": self.data.get("zones") or [],
             "room_areas": self.data.get("room_areas") or {},
             "room_days": self.room_days(),
@@ -407,6 +413,18 @@ class ScoveHub:
             self._recharging = False
             self._mission_ended()
 
+    def _archive_track(self, started: str, trail: list[list[float]]) -> None:
+        """Conserva il percorso del giro appena chiuso e scarta quelli usciti dallo storico."""
+        if len(trail) > 1:
+            self.tracks[started] = logic.simplify_track(trail)
+        keep = {h.get("started") for h in self.data.get("history") or []}
+        for key in [k for k in self.tracks if k not in keep]:
+            del self.tracks[key]
+        self._tracks_store.async_delay_save(lambda: {"tracks": self.tracks}, 5)
+
+    def get_track(self, started: str) -> list[list[int]]:
+        return self.tracks.get(started) or []
+
     def _repair_merged_mission(self) -> None:
         """Fino alla 1.0.14 una partenza dalla base poteva essere scambiata per la ripresa dopo
         una ricarica, riaprendo il giro precedente. Lo separa di nuovo: il vecchio torna nello
@@ -462,6 +480,7 @@ class ScoveHub:
         history = self.data.get("history") or []
         if history and history[0].get("started") == mission.get("started"):
             self.data["history"] = history[1:]
+        self.tracks.pop(mission.get("started"), None)
         if "run_seconds" not in mission:
             started = dt_util.parse_datetime(mission.get("started") or "")
             ended = dt_util.parse_datetime(mission.get("ended") or "")
@@ -572,6 +591,7 @@ class ScoveHub:
         for cell in {logic.cell_of(p[0], p[1]) for p in self.data.get("trail") or []}:
             self.data["coverage"][cell] = self.data["coverage"].get(cell, 0) + 1
         self.data["history"] = ([dict(mission)] + (self.data.get("history") or []))[:MAX_HISTORY]
+        self._archive_track(mission["started"], self.data.get("trail") or [])
         if (self.data.get("settings") or {}).get("notify_done", True):
             what = f" del programma «{mission['schedule']}»" if mission.get("schedule") else ""
             self.alert(

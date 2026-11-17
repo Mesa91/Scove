@@ -232,3 +232,38 @@ def room_coverage(trail: list[list[float]], rooms: list[dict[str, Any]], radius_
                     covered += (cx, cy) in swept
         out[room["id"]] = round(covered / total, 2) if total else 0.0
     return out
+
+
+def simplify_track(points: list[list[float]], tolerance_mm: float = 60.0, max_points: int = 2000) -> list[list[int]]:
+    """Riduce il percorso per conservarlo nello storico, senza cambiarne la forma a vista
+    (Ramer-Douglas-Peucker con una tolleranza di pochi centimetri)."""
+    pts = [p for p in points or [] if p and len(p) >= 2]
+    n = len(pts)
+    if n <= 2:
+        return [[round(p[0]), round(p[1])] for p in pts]
+    keep = [False] * n
+    keep[0] = keep[-1] = True
+    stack = [(0, n - 1)]
+    while stack:
+        first, last = stack.pop()
+        (x1, y1), (x2, y2) = pts[first][:2], pts[last][:2]
+        dx, dy = x2 - x1, y2 - y1
+        norm = math.hypot(dx, dy)
+        best, index = -1.0, -1
+        for i in range(first + 1, last):
+            px, py = pts[i][0], pts[i][1]
+            if norm == 0:
+                dist = math.hypot(px - x1, py - y1)
+            else:
+                dist = abs(dy * px - dx * py + x2 * y1 - y2 * x1) / norm
+            if dist > best:
+                best, index = dist, i
+        if index > 0 and best > tolerance_mm:
+            keep[index] = True
+            stack.append((first, index))
+            stack.append((index, last))
+    out = [pts[i] for i in range(n) if keep[i]]
+    if len(out) > max_points:
+        step = math.ceil(len(out) / max_points)
+        out = out[::step] + ([out[-1]] if (len(out) - 1) % step else [])
+    return [[round(p[0]), round(p[1])] for p in out]

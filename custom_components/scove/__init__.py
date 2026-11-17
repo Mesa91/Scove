@@ -101,6 +101,7 @@ async def _async_setup_shared(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_get)
     websocket_api.async_register_command(hass, ws_command)
     websocket_api.async_register_command(hass, ws_save)
+    websocket_api.async_register_command(hass, ws_track)
 
 
 class ScoveMapView(HomeAssistantView):
@@ -156,6 +157,16 @@ async def ws_command(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) 
         connection.send_result(msg["id"], hub.snapshot())
     except Exception as err:  # noqa: BLE001
         connection.send_error(msg["id"], "failed", str(err))
+
+
+@websocket_api.websocket_command({vol.Required("type"): "scove/track", vol.Required("started"): str})
+@callback
+def ws_track(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
+    """Il percorso di un giro passato, per la mappa dello storico."""
+    try:
+        connection.send_result(msg["id"], {"points": _hub(hass).get_track(msg["started"])})
+    except HomeAssistantError as err:
+        connection.send_error(msg["id"], "not_found", str(err))
 
 
 @websocket_api.websocket_command({

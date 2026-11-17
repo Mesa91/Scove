@@ -2,6 +2,8 @@
 const DAYS = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
 const TABS = [["cmd", "Comandi"], ["prog", "Programma"], ["health", "Salute"], ["map", "Mappa"], ["alerts", "Avvisi"]];
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmtShort = (iso) => (iso ? new Date(iso).toLocaleString("it-IT", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—");
+const fmtTime = (iso) => (iso ? new Date(iso).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }) : "—");
 const fmtDate = (iso) => (iso ? new Date(iso).toLocaleString("it-IT", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—");
 
 const CSS = `
@@ -44,7 +46,9 @@ class ScovePanel extends HTMLElement {
     this._sel = new Set();
     this._draw = false;
     this._drag = null;
-    this._layers = { trail: true, history: true };
+    this._session = null;   // giro mostrato sulla mappa: null = quello in corso o l'ultimo
+    this._tracks = {};      // percorsi dei giri passati già scaricati
+    this._asked = {};
   }
 
   set hass(h) {
@@ -143,49 +147,90 @@ class ScovePanel extends HTMLElement {
           <button class="small" data-part="${k}">Fatto</button></div>
         <div class="bar"><i class="${p.level}" style="width:${Math.min(100, p.used_pct)}%"></i></div>
         <div class="muted">${p.by_sensor ? "pieno secondo il robot: da svuotare adesso" : p.remaining > 0 ? `ancora ${p.remaining} h di lavoro` : `superato di ${Math.abs(p.remaining)} h`} ${p.learned_from ? `(si riempie in circa ${p.interval} h, da ${p.learned_from} ${p.learned_from > 1 ? "riempimenti osservati" : "riempimento osservato"})` : `(ogni ${p.interval} h)`}</div></div>`).join("")}</div></div>
-      <div class="card"><h2>Ultime pulizie</h2><div class="list">${s.history.length ? s.history.map((h) => `<div>${fmtDate(h.started)} — <b>${esc(h.result)}</b> · ${h.area_m2 ?? "?"} m² · ${h.minutes ?? "?"} min di lavoro${(h.rooms || []).length ? " · " + esc(h.rooms.join(", ")) : ""}${h.stuck ? ` · bloccato ${h.stuck}×` : ""}${h.recharges ? ` · ${h.recharges} ricarica${h.recharges > 1 ? "he" : ""} a metà` : ""}${(h.missed || []).length ? ` · poco pulite: ${esc(h.missed.join(", "))}` : ""}${h.coverage ? `<br><span class="muted">${Object.entries(h.coverage).map(([n, v]) => `${esc(n)} ${v}%`).join(" · ")}</span>` : ""}</div>`).join("") : `<div class="muted">Ancora nessuna pulizia registrata da Scove.</div>`}</div></div>`;
+      <div class="card"><h2>Ultime pulizie</h2><div class="list">${s.history.length ? s.history.map((h) => `<div data-sess="${esc(h.started)}" style="cursor:pointer">${fmtDate(h.started)} — <b>${esc(h.result)}</b> · ${h.area_m2 ?? "?"} m² · ${h.minutes ?? "?"} min di lavoro${(h.rooms || []).length ? " · " + esc(h.rooms.join(", ")) : ""}${h.stuck ? ` · bloccato ${h.stuck}×` : ""}${h.recharges ? ` · ${h.recharges} ricarica${h.recharges > 1 ? "he" : ""} a metà` : ""}${(h.missed || []).length ? ` · poco pulite: ${esc(h.missed.join(", "))}` : ""}${h.coverage ? `<br><span class="muted">${Object.entries(h.coverage).map(([n, v]) => `${esc(n)} ${v}%`).join(" · ")}</span>` : ""}</div>`).join("") : `<div class="muted">Ancora nessuna pulizia registrata da Scove.</div>`}</div>${s.history.length ? `<p class="muted">Tocca un giro per vederne il percorso sulla mappa.</p>` : ""}</div>`;
   }
 
   // ── Mappa ─────────────────────────────────────────────────────────
-  _bounds(s) {
-    const pts = [];
+  _sessions(s) {
+    const list = [];
+    if (s.mission && !s.mission.ended) list.push({ key: "live", live: true });
+    (s.history || []).forEach((h) => list.push({ key: h.started, h }));
+    return list;
+  }
+
+  _currentSession(s) {
+    const list = this._sessions(s);
+    return list.find((x) => x.key === this._session) || list[0] || null;
+  }
+
+  _sessionPoints(s, cur) {
+    if (!cur) return [];
+    if (cur.live) return s.trail;
+    if (this._tracks[cur.key]) return this._tracks[cur.key];
+    if (cur.h.has_track && !this._asked[cur.key]) {
+      this._asked[cur.key] = true;
+      this._hass.callWS({ type: "scove/track", started: cur.key })
+        .then((r) => { this._tracks[cur.key] = r.points || []; })
+        .catch(() => { this._tracks[cur.key] = []; })
+        .finally(() => this._render());
+    }
+    return [];
+  }
+
+  _sessionText(s, cur) {
+    if (!cur) return "Ancora nessuna pulizia registrata da Scove.";
+    if (cur.live) return `In corso da ${fmtTime(s.mission.started)} · ${s.run_minutes || 0} min di lavoro finora${s.recharging ? " · in ricarica" : ""}`;
+    const h = cur.h;
+    const bits = [fmtShort(h.started), h.result, `${h.area_m2 ?? "?"} m²`, `${h.minutes ?? "?"} min di lavoro`];
+    if (h.recharges) bits.push(`${h.recharges} ricarica${h.recharges > 1 ? "he" : ""} esclus${h.recharges > 1 ? "e" : "a"} dal tempo`);
+    if (h.stuck) bits.push(`bloccato ${h.stuck}×`);
+    return bits.join(" · ");
+  }
+
+  _bounds(s, points, withPosition) {
+    const pts = [[0, 0]];
     (s.map?.rooms || []).forEach((r) => pts.push(...r.polygon));
     (s.map?.keepouts || []).forEach((k) => pts.push(...k));
     s.zones.forEach((z) => pts.push([z.x1, z.y1], [z.x2, z.y2]));
-    s.trail.forEach((p) => pts.push(p));
-    Object.keys(s.coverage).forEach((c) => { const [cx, cy] = c.split(",").map(Number); pts.push([cx * s.cell_mm, cy * s.cell_mm]); });
-    if (s.position) pts.push([s.position.x, s.position.y]);
-    if (!pts.length) return { x: -3000, y: -3000, w: 6000, h: 6000 };
+    points.forEach((p) => pts.push(p));
+    if (withPosition && s.position) pts.push([s.position.x, s.position.y]);
     const xs = pts.map((p) => p[0]), ys = pts.map((p) => -p[1]);
     const x = Math.min(...xs) - 400, y = Math.min(...ys) - 400;
     return { x, y, w: Math.max(...xs) - x + 400, h: Math.max(...ys) - y + 400 };
   }
 
   _tabMap(s) {
-    const b = this._bounds(s);
+    const sessions = this._sessions(s);
+    const cur = this._currentSession(s);
+    const points = this._sessionPoints(s, cur);
+    const live = !!cur?.live;
+    const b = this._bounds(s, points, live);
     const poly = (p) => p.map(([x, y]) => `${x},${-y}`).join(" ");
-    const maxVisits = Math.max(1, ...Object.values(s.coverage));
-    const cells = this._layers.history ? Object.entries(s.coverage).map(([c, n]) => { const [cx, cy] = c.split(",").map(Number); return `<rect x="${cx * s.cell_mm}" y="${-(cy + 1) * s.cell_mm}" width="${s.cell_mm}" height="${s.cell_mm}" fill="#35d0a5" opacity="${(0.12 + 0.4 * n / maxVisits).toFixed(2)}"/>`; }).join("") : "";
     const cal = s.calibration;
+    const missing = cur && !live && !cur.h.has_track;
+    const loading = cur && !live && cur.h.has_track && !this._tracks[cur.key];
+    const h = cur && !live ? cur.h : null;
     return `<div class="card"><div class="row sp"><h2>Dove è passato</h2><div class="row">
-        <button class="chip ${this._layers.trail ? "on" : ""}" data-layer="trail">Ultima pulizia</button>
-        <button class="chip ${this._layers.history ? "on" : ""}" data-layer="history">Storico</button>
         <button class="chip ${this._draw ? "on" : ""}" id="draw">${this._draw ? "Trascina sulla mappa…" : "+ Zona vietata"}</button></div></div>
+      ${sessions.length ? `<div class="row" style="margin-bottom:10px"><select id="session" style="flex:1;min-width:0">${sessions.map((x) => `<option value="${esc(x.key)}" ${cur && x.key === cur.key ? "selected" : ""}>${x.live ? "In corso adesso" : `${esc(fmtShort(x.h.started))} · ${x.h.area_m2 ?? "?"} m² · ${x.h.minutes ?? "?"} min`}</option>`).join("")}</select></div>` : ""}
+      <div class="muted" style="margin-bottom:10px">${esc(this._sessionText(s, cur))}</div>
       <svg class="map" viewBox="${b.x} ${b.y} ${b.w} ${b.h}">
         <defs><pattern id="hatch" width="160" height="160" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="60" height="160" fill="#ff5d5d" opacity=".55"/></pattern></defs>
         ${(s.map?.rooms || []).map((r) => r.polygon.length > 2 ? `<polygon points="${poly(r.polygon)}" fill="rgba(80,140,255,.16)" stroke="#7fb2ff" stroke-width="35"/>` : "").join("")}
-        ${cells}
-        ${this._layers.trail && s.trail.length > 1 ? `<polyline points="${poly(s.trail)}" fill="none" stroke="#4fd8ff" stroke-opacity=".38" stroke-width="340" stroke-linecap="round" stroke-linejoin="round"/>` : ""}
+        ${points.length > 1 ? `<polyline points="${poly(points)}" fill="none" stroke="#4fd8ff" stroke-opacity=".38" stroke-width="340" stroke-linecap="round" stroke-linejoin="round"/><polyline points="${poly(points)}" fill="none" stroke="#bff3ff" stroke-opacity=".75" stroke-width="22" stroke-linejoin="round"/>` : ""}
         ${(s.map?.keepouts || []).map((k) => `<polygon points="${poly(k)}" fill="url(#hatch)" stroke="#ff6b6b" stroke-width="30"/>`).join("")}
         ${s.zones.map((z, i) => `<rect data-zone="${i}" x="${Math.min(z.x1, z.x2)}" y="${-Math.max(z.y1, z.y2)}" width="${Math.abs(z.x2 - z.x1)}" height="${Math.abs(z.y2 - z.y1)}" fill="rgba(255,170,60,.28)" stroke="#ffb14a" stroke-width="35" stroke-dasharray="120 80" style="cursor:pointer"/>`).join("")}
-        ${(s.map?.rooms || []).map((r) => { if (r.polygon.length < 3) return ""; const cx = r.polygon.reduce((a, p) => a + p[0], 0) / r.polygon.length, cy = r.polygon.reduce((a, p) => a + p[1], 0) / r.polygon.length; return `<text x="${cx}" y="${-cy}" fill="#dbe9ff" font-size="${Math.max(170, b.w / 45)}" text-anchor="middle">${esc(r.label || r.name)}</text>`; }).join("")}
+        ${(s.map?.rooms || []).map((r) => { if (r.polygon.length < 3) return ""; const cx = r.polygon.reduce((a, p) => a + p[0], 0) / r.polygon.length, cy = r.polygon.reduce((a, p) => a + p[1], 0) / r.polygon.length; const pct = h?.coverage?.[r.label || r.name]; return `<text x="${cx}" y="${-cy}" fill="#dbe9ff" font-size="${Math.max(170, b.w / 45)}" text-anchor="middle">${esc(r.label || r.name)}${pct !== undefined ? ` · ${pct}%` : ""}</text>`; }).join("")}
         <circle cx="0" cy="0" r="120" fill="#ffd27a"/>
-        ${s.position ? `<circle cx="${s.position.x}" cy="${-s.position.y}" r="170" fill="#fff" stroke="#2f74e6" stroke-width="60"/>` : ""}
+        ${live && s.position ? `<circle cx="${s.position.x}" cy="${-s.position.y}" r="170" fill="#fff" stroke="#2f74e6" stroke-width="60"/>` : ""}
         <rect id="ghost" fill="rgba(255,170,60,.3)" stroke="#ffb14a" stroke-width="35" visibility="hidden"/>
       </svg>
-      <p class="muted">Azzurro: stanze del robot · ciano: percorso dell'ultima pulizia · verde: passaggi accumulati · rosso tratteggiato: zone vietate impostate nell'app iRobot (il robot le rispetta) · arancione: zone segnate in Scove (tocca per eliminarle) · giallo: base.</p>
-      ${s.zones.length ? `<p class="muted">Le zone arancioni per ora sono un promemoria visivo: il robot rispetta solo quelle rosse. Vedi il README per lo stato dell'invio al robot.</p>` : ""}
-      <div class="row"><button class="small" id="clear-cov">Azzera storico passaggi</button><button class="small" data-cmd="refresh_map">Aggiorna mappa dal cloud</button></div></div>
+      ${missing ? `<p class="muted">Per questo giro il percorso non è stato conservato: lo storico dei percorsi parte dalla versione 1.0.16.</p>` : ""}
+      ${loading ? `<p class="muted">Carico il percorso…</p>` : ""}
+      ${h?.partial_track ? `<p class="muted">L'inizio di questo giro manca dal percorso: metri quadri sottostimati.</p>` : ""}
+      <p class="muted">Azzurro: stanze del robot, con la parte coperta in quel giro · ciano: percorso del giro scelto · bianco: robot adesso · rosso tratteggiato: zone vietate impostate nell'app iRobot (il robot le rispetta) · arancione: zone segnate in Scove (tocca per eliminarle) · giallo: base. Il tempo non comprende le soste di ricarica.</p>
+      ${s.zones.length ? `<p class="muted">Le zone arancioni per ora sono un promemoria visivo: il robot rispetta solo quelle rosse.</p>` : ""}
+      <div class="row"><button class="small" data-cmd="refresh_map">Aggiorna mappa dal cloud</button></div></div>
       <div class="card"><h2>Allineamento percorso ↔ mappa</h2>
         <p class="muted">Se il percorso appare spostato o ruotato rispetto alle stanze, correggi qui. Vale per i punti registrati da ora in poi.</p>
         <div class="row">X (mm) <input type="number" data-cal="dx" value="${cal.dx || 0}"> Y (mm) <input type="number" data-cal="dy" value="${cal.dy || 0}">
@@ -241,11 +286,11 @@ class ScovePanel extends HTMLElement {
       else if (el.dataset.sroom) el.onclick = () => apply((p) => { const r = el.dataset.sroom; p.rooms = (p.rooms || []).includes(r) ? p.rooms.filter((x) => x !== r) : [...(p.rooms || []), r]; });
     });
 
-    q("[data-layer]").forEach((b) => (b.onclick = () => { this._layers[b.dataset.layer] = !this._layers[b.dataset.layer]; this._render(); }));
+    const sess = one("#session");
+    if (sess) sess.onchange = () => { this._session = sess.value; this._render(); };
+    q("[data-sess]").forEach((el) => (el.onclick = () => { this._session = el.dataset.sess; this._tab = "map"; this._render(); }));
     const draw = one("#draw");
     if (draw) draw.onclick = () => { this._draw = !this._draw; this._render(); };
-    const clear = one("#clear-cov");
-    if (clear) clear.onclick = () => confirm("Azzerare lo storico dei passaggi?") && this._cmd("clear_coverage");
     q("[data-cal]").forEach((el) => (el.onchange = () => this._save("calibration", { ...s.calibration, [el.dataset.cal]: Number(el.value) || 0 })));
     const mirror = one("#mirror");
     if (mirror) mirror.onclick = () => this._save("calibration", { ...s.calibration, mirror: !s.calibration.mirror });

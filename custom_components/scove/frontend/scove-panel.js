@@ -36,6 +36,14 @@ input[type=number]{width:90px}
 svg.map{width:100%;height:auto;max-height:70vh;background:rgba(5,14,30,.6);border-radius:14px;touch-action:none}
 .sched{border-top:1px solid rgba(140,185,255,.15);padding-top:12px;margin-top:12px}
 .list div{padding:8px 0;border-bottom:1px solid rgba(140,185,255,.12)}
+.modal{position:fixed;inset:0;z-index:50;background:rgba(2,8,20,.72);backdrop-filter:blur(6px);display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow-y:auto}
+.sheet{width:100%;max-width:760px;background:linear-gradient(180deg,#10284d,#0a1a33);border:1px solid rgba(140,185,255,.3);border-radius:20px;padding:16px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.run{display:flex;justify-content:space-between;align-items:center;gap:10px;width:100%;text-align:left;margin:0 0 8px;padding:12px 14px;border-radius:14px}
+.run b{display:block;font-size:15px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:4px 0 12px}
+.stats div{background:rgba(110,160,255,.10);border:1px solid rgba(140,185,255,.2);border-radius:14px;padding:10px 12px}
+.stats b{display:block;font-size:22px}
+svg.hmap{width:100%;height:auto;max-height:62vh;background:rgba(5,14,30,.6);border-radius:14px}
 `;
 
 class ScovePanel extends HTMLElement {
@@ -46,7 +54,7 @@ class ScovePanel extends HTMLElement {
     this._sel = new Set();
     this._draw = false;
     this._drag = null;
-    this._session = null;   // giro mostrato sulla mappa: null = quello in corso o l'ultimo
+    this._hist = null;      // pop-up dello storico: null = chiuso, "list" = elenco, altrimenti il giro aperto
     this._tracks = {};      // percorsi dei giri passati già scaricati
     this._asked = {};
   }
@@ -64,7 +72,7 @@ class ScovePanel extends HTMLElement {
     try { this._s = await this._hass.callWS({ type: "scove/get" }); this._err = null; }
     catch (e) { this._err = e.message || String(e); }
     const active = this.shadowRoot.activeElement;
-    if (this._drag || (active && ["INPUT", "SELECT"].includes(active.tagName))) return;
+    if (this._drag || this._hist || (active && ["INPUT", "SELECT"].includes(active.tagName))) return;
     this._render();
   }
 
@@ -88,7 +96,7 @@ class ScovePanel extends HTMLElement {
     root.innerHTML = `<style>${CSS}</style><div class="wrap">
       <h1>${esc(s.name)} <span class="pill ${s.connected ? "ok" : "due"}">${s.connected ? "online" : "offline"}</span></h1>
       <div class="tabs">${TABS.map(([k, n]) => `<button class="tab ${k === this._tab ? "on" : ""}" data-tab="${k}">${n}</button>`).join("")}</div>
-      ${this._err ? `<div class="card err">${esc(this._err)}</div>` : ""}${body}</div>`;
+      ${this._err ? `<div class="card err">${esc(this._err)}</div>` : ""}${body}</div>${this._modal(s)}`;
     root.querySelectorAll("[data-tab]").forEach((b) => (b.onclick = () => { this._tab = b.dataset.tab; this._render(); }));
     this._bind(s);
   }
@@ -147,44 +155,20 @@ class ScovePanel extends HTMLElement {
           <button class="small" data-part="${k}">Fatto</button></div>
         <div class="bar"><i class="${p.level}" style="width:${Math.min(100, p.used_pct)}%"></i></div>
         <div class="muted">${p.by_sensor ? "pieno secondo il robot: da svuotare adesso" : p.remaining > 0 ? `ancora ${p.remaining} h di lavoro` : `superato di ${Math.abs(p.remaining)} h`} ${p.learned_from ? `(si riempie in circa ${p.interval} h, da ${p.learned_from} ${p.learned_from > 1 ? "riempimenti osservati" : "riempimento osservato"})` : `(ogni ${p.interval} h)`}</div></div>`).join("")}</div></div>
-      <div class="card"><h2>Ultime pulizie</h2><div class="list">${s.history.length ? s.history.map((h) => `<div data-sess="${esc(h.started)}" style="cursor:pointer">${fmtDate(h.started)} — <b>${esc(h.result)}</b> · ${h.area_m2 ?? "?"} m² · ${h.minutes ?? "?"} min di lavoro${(h.rooms || []).length ? " · " + esc(h.rooms.join(", ")) : ""}${h.stuck ? ` · bloccato ${h.stuck}×` : ""}${h.recharges ? ` · ${h.recharges} ricarica${h.recharges > 1 ? "he" : ""} a metà` : ""}${(h.missed || []).length ? ` · poco pulite: ${esc(h.missed.join(", "))}` : ""}${h.coverage ? `<br><span class="muted">${Object.entries(h.coverage).map(([n, v]) => `${esc(n)} ${v}%`).join(" · ")}</span>` : ""}</div>`).join("") : `<div class="muted">Ancora nessuna pulizia registrata da Scove.</div>`}</div>${s.history.length ? `<p class="muted">Tocca un giro per vederne il percorso sulla mappa.</p>` : ""}</div>`;
+      <div class="card"><h2>Ultime pulizie</h2><div class="list">${s.history.length ? s.history.map((h) => `<div data-sess="${esc(h.started)}" style="cursor:pointer">${fmtDate(h.started)} — <b>${esc(h.result)}</b> · ${h.area_m2 ?? "?"} m² · ${h.minutes ?? "?"} min di lavoro${(h.rooms || []).length ? " · " + esc(h.rooms.join(", ")) : ""}${h.stuck ? ` · bloccato ${h.stuck}×` : ""}${h.recharges ? ` · ${h.recharges} ricarica${h.recharges > 1 ? "he" : ""} a metà` : ""}${(h.missed || []).length ? ` · poco pulite: ${esc(h.missed.join(", "))}` : ""}${h.coverage ? `<br><span class="muted">${Object.entries(h.coverage).map(([n, v]) => `${esc(n)} ${v}%`).join(" · ")}</span>` : ""}</div>`).join("") : `<div class="muted">Ancora nessuna pulizia registrata da Scove.</div>`}</div>${s.history.length ? `<p class="muted">Tocca un giro per aprirne la mappa.</p>` : ""}</div>`;
   }
 
   // ── Mappa ─────────────────────────────────────────────────────────
-  _sessions(s) {
-    const list = [];
-    if (s.mission && !s.mission.ended) list.push({ key: "live", live: true });
-    (s.history || []).forEach((h) => list.push({ key: h.started, h }));
-    return list;
-  }
-
-  _currentSession(s) {
-    const list = this._sessions(s);
-    return list.find((x) => x.key === this._session) || list[0] || null;
-  }
-
-  _sessionPoints(s, cur) {
-    if (!cur) return [];
-    if (cur.live) return s.trail;
-    if (this._tracks[cur.key]) return this._tracks[cur.key];
-    if (cur.h.has_track && !this._asked[cur.key]) {
-      this._asked[cur.key] = true;
-      this._hass.callWS({ type: "scove/track", started: cur.key })
-        .then((r) => { this._tracks[cur.key] = r.points || []; })
-        .catch(() => { this._tracks[cur.key] = []; })
+  _trackFor(key, h) {
+    if (this._tracks[key]) return this._tracks[key];
+    if (h?.has_track && !this._asked[key]) {
+      this._asked[key] = true;
+      this._hass.callWS({ type: "scove/track", started: key })
+        .then((r) => { this._tracks[key] = r.points || []; })
+        .catch(() => { this._tracks[key] = []; })
         .finally(() => this._render());
     }
     return [];
-  }
-
-  _sessionText(s, cur) {
-    if (!cur) return "Ancora nessuna pulizia registrata da Scove.";
-    if (cur.live) return `In corso da ${fmtTime(s.mission.started)} · ${s.run_minutes || 0} min di lavoro finora${s.recharging ? " · in ricarica" : ""}`;
-    const h = cur.h;
-    const bits = [fmtShort(h.started), h.result, `${h.area_m2 ?? "?"} m²`, `${h.minutes ?? "?"} min di lavoro`];
-    if (h.recharges) bits.push(`${h.recharges} ricarica${h.recharges > 1 ? "he" : ""} esclus${h.recharges > 1 ? "e" : "a"} dal tempo`);
-    if (h.stuck) bits.push(`bloccato ${h.stuck}×`);
-    return bits.join(" · ");
   }
 
   _bounds(s, points, withPosition) {
@@ -199,36 +183,36 @@ class ScovePanel extends HTMLElement {
     return { x, y, w: Math.max(...xs) - x + 400, h: Math.max(...ys) - y + 400 };
   }
 
-  _tabMap(s) {
-    const sessions = this._sessions(s);
-    const cur = this._currentSession(s);
-    const points = this._sessionPoints(s, cur);
-    const live = !!cur?.live;
-    const b = this._bounds(s, points, live);
+  // Disegno della mappa: stanze, un solo percorso, zone vietate, base (e robot se richiesto).
+  _svg(s, points, { cls = "map", position = false, coverage = null, editable = false } = {}) {
+    const b = this._bounds(s, points, position);
     const poly = (p) => p.map(([x, y]) => `${x},${-y}`).join(" ");
-    const cal = s.calibration;
-    const missing = cur && !live && !cur.h.has_track;
-    const loading = cur && !live && cur.h.has_track && !this._tracks[cur.key];
-    const h = cur && !live ? cur.h : null;
-    return `<div class="card"><div class="row sp"><h2>Dove è passato</h2><div class="row">
-        <button class="chip ${this._draw ? "on" : ""}" id="draw">${this._draw ? "Trascina sulla mappa…" : "+ Zona vietata"}</button></div></div>
-      ${sessions.length ? `<div class="row" style="margin-bottom:10px"><select id="session" style="flex:1;min-width:0">${sessions.map((x) => `<option value="${esc(x.key)}" ${cur && x.key === cur.key ? "selected" : ""}>${x.live ? "In corso adesso" : `${esc(fmtShort(x.h.started))} · ${x.h.area_m2 ?? "?"} m² · ${x.h.minutes ?? "?"} min`}</option>`).join("")}</select></div>` : ""}
-      <div class="muted" style="margin-bottom:10px">${esc(this._sessionText(s, cur))}</div>
-      <svg class="map" viewBox="${b.x} ${b.y} ${b.w} ${b.h}">
-        <defs><pattern id="hatch" width="160" height="160" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="60" height="160" fill="#ff5d5d" opacity=".55"/></pattern></defs>
+    return `<svg class="${cls}" viewBox="${b.x} ${b.y} ${b.w} ${b.h}">
+        <defs><pattern id="hatch-${cls}" width="160" height="160" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="60" height="160" fill="#ff5d5d" opacity=".55"/></pattern></defs>
         ${(s.map?.rooms || []).map((r) => r.polygon.length > 2 ? `<polygon points="${poly(r.polygon)}" fill="rgba(80,140,255,.16)" stroke="#7fb2ff" stroke-width="35"/>` : "").join("")}
-        ${points.length > 1 ? `<polyline points="${poly(points)}" fill="none" stroke="#4fd8ff" stroke-opacity=".38" stroke-width="340" stroke-linecap="round" stroke-linejoin="round"/><polyline points="${poly(points)}" fill="none" stroke="#bff3ff" stroke-opacity=".75" stroke-width="22" stroke-linejoin="round"/>` : ""}
-        ${(s.map?.keepouts || []).map((k) => `<polygon points="${poly(k)}" fill="url(#hatch)" stroke="#ff6b6b" stroke-width="30"/>`).join("")}
-        ${s.zones.map((z, i) => `<rect data-zone="${i}" x="${Math.min(z.x1, z.x2)}" y="${-Math.max(z.y1, z.y2)}" width="${Math.abs(z.x2 - z.x1)}" height="${Math.abs(z.y2 - z.y1)}" fill="rgba(255,170,60,.28)" stroke="#ffb14a" stroke-width="35" stroke-dasharray="120 80" style="cursor:pointer"/>`).join("")}
-        ${(s.map?.rooms || []).map((r) => { if (r.polygon.length < 3) return ""; const cx = r.polygon.reduce((a, p) => a + p[0], 0) / r.polygon.length, cy = r.polygon.reduce((a, p) => a + p[1], 0) / r.polygon.length; const pct = h?.coverage?.[r.label || r.name]; return `<text x="${cx}" y="${-cy}" fill="#dbe9ff" font-size="${Math.max(170, b.w / 45)}" text-anchor="middle">${esc(r.label || r.name)}${pct !== undefined ? ` · ${pct}%` : ""}</text>`; }).join("")}
+        ${points.length > 1 ? `<polyline points="${poly(points)}" fill="none" stroke="#4fd8ff" stroke-opacity=".38" stroke-width="340" stroke-linecap="round" stroke-linejoin="round"/>` : ""}
+        ${(s.map?.keepouts || []).map((k) => `<polygon points="${poly(k)}" fill="url(#hatch-${cls})" stroke="#ff6b6b" stroke-width="30"/>`).join("")}
+        ${s.zones.map((z, i) => `<rect ${editable ? `data-zone="${i}" style="cursor:pointer"` : ""} x="${Math.min(z.x1, z.x2)}" y="${-Math.max(z.y1, z.y2)}" width="${Math.abs(z.x2 - z.x1)}" height="${Math.abs(z.y2 - z.y1)}" fill="rgba(255,170,60,.28)" stroke="#ffb14a" stroke-width="35" stroke-dasharray="120 80"/>`).join("")}
+        ${(s.map?.rooms || []).map((r) => { if (r.polygon.length < 3) return ""; const cx = r.polygon.reduce((a, p) => a + p[0], 0) / r.polygon.length, cy = r.polygon.reduce((a, p) => a + p[1], 0) / r.polygon.length; const pct = coverage?.[r.label || r.name]; return `<text x="${cx}" y="${-cy}" fill="#dbe9ff" font-size="${Math.max(170, b.w / 45)}" text-anchor="middle">${esc(r.label || r.name)}${pct !== undefined ? ` · ${pct}%` : ""}</text>`; }).join("")}
         <circle cx="0" cy="0" r="120" fill="#ffd27a"/>
-        ${live && s.position ? `<circle cx="${s.position.x}" cy="${-s.position.y}" r="170" fill="#fff" stroke="#2f74e6" stroke-width="60"/>` : ""}
-        <rect id="ghost" fill="rgba(255,170,60,.3)" stroke="#ffb14a" stroke-width="35" visibility="hidden"/>
-      </svg>
-      ${missing ? `<p class="muted">Per questo giro il percorso non è stato conservato: lo storico dei percorsi parte dalla versione 1.0.16.</p>` : ""}
-      ${loading ? `<p class="muted">Carico il percorso…</p>` : ""}
-      ${h?.partial_track ? `<p class="muted">L'inizio di questo giro manca dal percorso: metri quadri sottostimati.</p>` : ""}
-      <p class="muted">Azzurro: stanze del robot, con la parte coperta in quel giro · ciano: percorso del giro scelto · bianco: robot adesso · rosso tratteggiato: zone vietate impostate nell'app iRobot (il robot le rispetta) · arancione: zone segnate in Scove (tocca per eliminarle) · giallo: base. Il tempo non comprende le soste di ricarica.</p>
+        ${position && s.position ? `<circle cx="${s.position.x}" cy="${-s.position.y}" r="170" fill="#fff" stroke="#2f74e6" stroke-width="60"/>` : ""}
+        ${editable ? `<rect id="ghost" fill="rgba(255,170,60,.3)" stroke="#ffb14a" stroke-width="35" visibility="hidden"/>` : ""}
+      </svg>`;
+  }
+
+  _tabMap(s) {
+    const live = !!(s.mission && !s.mission.ended);
+    const last = s.history?.[0];
+    const cal = s.calibration;
+    const what = live
+      ? `In corso da ${fmtTime(s.mission.started)} · ${s.run_minutes || 0} min di lavoro finora${s.recharging ? " · in ricarica" : ""}`
+      : last ? `Ultimo giro: ${fmtShort(last.started)} · ${last.area_m2 ?? "?"} m² · ${last.minutes ?? "?"} min di lavoro` : "Ancora nessun giro registrato.";
+    return `<div class="card"><div class="row sp"><h2>${live ? "Giro in corso" : "Ultimo giro"}</h2><div class="row">
+        <button class="chip" id="open-hist">Storico</button>
+        <button class="chip ${this._draw ? "on" : ""}" id="draw">${this._draw ? "Trascina sulla mappa…" : "+ Zona vietata"}</button></div></div>
+      <div class="muted" style="margin-bottom:10px">${esc(what)}</div>
+      ${this._svg(s, s.trail, { position: live, editable: true })}
+      <p class="muted">Azzurro: stanze del robot · ciano: percorso · bianco: robot adesso · rosso tratteggiato: zone vietate impostate nell'app iRobot (il robot le rispetta) · arancione: zone segnate in Scove (tocca per eliminarle) · giallo: base. «Storico» apre gli ultimi 10 giri.</p>
       ${s.zones.length ? `<p class="muted">Le zone arancioni per ora sono un promemoria visivo: il robot rispetta solo quelle rosse.</p>` : ""}
       <div class="row"><button class="small" data-cmd="refresh_map">Aggiorna mappa dal cloud</button></div></div>
       <div class="card"><h2>Allineamento percorso ↔ mappa</h2>
@@ -236,6 +220,37 @@ class ScovePanel extends HTMLElement {
         <div class="row">X (mm) <input type="number" data-cal="dx" value="${cal.dx || 0}"> Y (mm) <input type="number" data-cal="dy" value="${cal.dy || 0}">
           Rotazione (°) <input type="number" data-cal="rotation" value="${cal.rotation || 0}">
           <button class="chip ${cal.mirror ? "on" : ""}" id="mirror">Specchia</button></div></div>`;
+  }
+
+  // ── Pop-up dello storico ──────────────────────────────────────────
+  _modal(s) {
+    if (!this._hist || !s) return "";
+    const runs = s.history || [];
+    if (this._hist === "list") {
+      return `<div class="modal" id="hist-bg"><div class="sheet">
+        <div class="row sp" style="margin-bottom:12px"><h2 style="margin:0">Storico · ultimi ${runs.length} giri</h2><button class="small" id="hist-close">✕ Chiudi</button></div>
+        ${runs.length ? runs.map((h) => `<button class="run" data-run="${esc(h.started)}"><span><b>${esc(fmtShort(h.started))}</b><span class="muted">${esc(h.result || "")}${h.recharges ? " · con ricarica" : ""}${h.stuck ? ` · bloccato ${h.stuck}×` : ""}</span></span><span style="text-align:right"><b>${h.minutes ?? "?"} min</b><span class="muted">${h.area_m2 ?? "?"} m²</span></span></button>`).join("")
+          : `<p class="muted">Ancora nessun giro registrato.</p>`}
+      </div></div>`;
+    }
+    const h = runs.find((x) => x.started === this._hist);
+    if (!h) { this._hist = "list"; return this._modal(s); }
+    const points = this._trackFor(h.started, h);
+    const loading = h.has_track && !this._tracks[h.started];
+    return `<div class="modal" id="hist-bg"><div class="sheet">
+      <div class="row sp" style="margin-bottom:10px"><button class="small" id="hist-back">‹ Elenco</button><button class="small" id="hist-close">✕ Chiudi</button></div>
+      <h2>${esc(fmtShort(h.started))} · ${esc(h.result || "")}</h2>
+      <div class="stats">
+        <div><span class="muted">Tempo di pulizia</span><b>${h.minutes ?? "?"} min</b>${h.recharges ? `<span class="muted">ricarica esclusa</span>` : ""}</div>
+        <div><span class="muted">Superficie</span><b>${h.area_m2 ?? "?"} m²</b></div>
+        ${h.total_minutes ? `<div><span class="muted">Durata totale</span><b>${h.total_minutes} min</b><span class="muted">dalla partenza al rientro</span></div>` : ""}
+      </div>
+      ${this._svg(s, points, { cls: "hmap", coverage: h.coverage })}
+      ${!h.has_track ? `<p class="muted">Il percorso di questo giro non è stato conservato: lo storico dei percorsi parte dalla versione 1.0.16.</p>` : ""}
+      ${loading ? `<p class="muted">Carico il percorso…</p>` : ""}
+      ${h.partial_track ? `<p class="muted">L'inizio di questo giro manca dal percorso: metri quadri sottostimati.</p>` : ""}
+      ${(h.missed || []).length ? `<p class="muted">Poco o per nulla pulite: ${esc(h.missed.join(", "))}</p>` : ""}
+    </div></div>`;
   }
 
   // ── Avvisi ────────────────────────────────────────────────────────
@@ -286,9 +301,17 @@ class ScovePanel extends HTMLElement {
       else if (el.dataset.sroom) el.onclick = () => apply((p) => { const r = el.dataset.sroom; p.rooms = (p.rooms || []).includes(r) ? p.rooms.filter((x) => x !== r) : [...(p.rooms || []), r]; });
     });
 
-    const sess = one("#session");
-    if (sess) sess.onchange = () => { this._session = sess.value; this._render(); };
-    q("[data-sess]").forEach((el) => (el.onclick = () => { this._session = el.dataset.sess; this._tab = "map"; this._render(); }));
+    q("[data-sess]").forEach((el) => (el.onclick = () => { this._hist = el.dataset.sess; this._render(); }));
+    const oh = one("#open-hist");
+    if (oh) oh.onclick = () => { this._hist = "list"; this._render(); };
+    q("[data-run]").forEach((el) => (el.onclick = () => { this._hist = el.dataset.run; this._render(); }));
+    const hb = one("#hist-back");
+    if (hb) hb.onclick = () => { this._hist = "list"; this._render(); };
+    const close = () => { this._hist = null; this._load(); };
+    const hc = one("#hist-close");
+    if (hc) hc.onclick = close;
+    const bg = one("#hist-bg");
+    if (bg) bg.onclick = (ev) => { if (ev.target === bg) close(); };
     const draw = one("#draw");
     if (draw) draw.onclick = () => { this._draw = !this._draw; this._render(); };
     q("[data-cal]").forEach((el) => (el.onchange = () => this._save("calibration", { ...s.calibration, [el.dataset.cal]: Number(el.value) || 0 })));

@@ -83,6 +83,7 @@ class ScoveHub:
         self._prev_phase = ""
         self._prev_error = 0
         self._prev_bin_full = False
+        self._prev_bin_present = True
         self._prev_levels: dict[str, str] = {}
         self._offline_since: float | None = None
         self._offline_alerted = False
@@ -150,6 +151,7 @@ class ScoveHub:
         )
         self._prev_error = self.error_code
         self._prev_bin_full = self.bin_full
+        self._prev_bin_present = self.bin_present
         self._prev_levels = {k: v["level"] for k, v in self.parts.items()}
 
         self._unsubs.append(async_track_time_change(self.hass, self._tick, second=0))
@@ -227,6 +229,10 @@ class ScoveHub:
         return bool((self.reported.get("bin") or {}).get("full"))
 
     @property
+    def bin_present(self) -> bool:
+        return bool((self.reported.get("bin") or {}).get("present", True))
+
+    @property
     def parts(self) -> dict[str, dict[str, Any]]:
         return logic.parts_status(
             logic.runtime_hours(self.reported), self.data.get("baselines") or {}, self.bin_full,
@@ -286,7 +292,7 @@ class ScoveHub:
             "last_command_initiator": (self.reported.get("lastCommand") or {}).get("initiator"),
             "error": self.error_code,
             "error_text": logic.error_text(self.error_code) if self.error_code else None,
-            "bin_full": self.bin_full, "bin_present": bool((rep.get("bin") or {}).get("present", True)),
+            "bin_full": self.bin_full, "bin_present": self.bin_present,
             "rssi": (rep.get("signal") or {}).get("rssi"),
             "health": self.health, "battery_retention": self.battery_retention,
             "battery_cycles": logic.battery_cycles(rep),
@@ -356,11 +362,15 @@ class ScoveHub:
         if full and not self._prev_bin_full:
             self._learn_bin_fill()
             self.alert("bin", "Contenitore pieno: va svuotato.", "problema")
-        if self._prev_bin_full and not full and logic.runtime_hours(self.reported) > 0:
-            # Contenitore svuotato: il conteggio delle ore riparte da qui, senza premere nulla.
+        present = self.bin_present
+        emptied = (self._prev_bin_full and not full) or (present and not self._prev_bin_present)
+        if emptied and logic.runtime_hours(self.reported) > 0:
+            # Contenitore tolto e rimesso (o non più pieno): il conteggio riparte da qui, senza premere nulla.
             self.data["baselines"]["bin"] = logic.runtime_hours(self.reported)
+            self.alert("bin_emptied", "Contenitore svuotato: conteggio azzerato.", "info", push=False)
             self._save_soon()
         self._prev_bin_full = full
+        self._prev_bin_present = present
 
         levels = {k: v["level"] for k, v in self.parts.items()}
         for key, level in levels.items():

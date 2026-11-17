@@ -348,4 +348,4 @@ class ScovePanel extends HTMLElement {
   }
 }
 
-customElements.define("scove-panel", ScovePanel);
+if (!customElements.get("scove-panel")) customElements.define("scove-panel", ScovePanel);

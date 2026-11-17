@@ -10,5 +10,5 @@
   "issue_tracker": "https://github.com/Mesa91/Scove/issues",
   "loggers": ["roombapy"],
   "requirements": ["roombapy>=2.0.2"],
-  "version": "1.0.14"
+  "version": "1.0.15"
 }

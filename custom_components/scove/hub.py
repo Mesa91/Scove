@@ -5,6 +5,7 @@ import asyncio
 from datetime import timedelta
 import json
 import logging
+import re
 from pathlib import Path
 import time
 import uuid
@@ -35,6 +36,7 @@ MAX_TRAIL = 6000
 MAX_HISTORY = 30
 MAX_ALERTS = 60
 MAX_BACKUPS = 10
+REOPEN_HOURS = 4  # una sosta di ricarica dura al massimo qualche ora: oltre, è un giro nuovo
 MAX_RETRIES = 4
 RETRY_MINUTES = 30
 PRENOTICE_MINUTES = 10
@@ -137,8 +139,11 @@ class ScoveHub:
             if missed is not None:
                 last["result"] = "parziale" if missed else "completata"
                 history[0] = dict(last)
+        self._repair_merged_mission()
         self._prev_phase = self.phase
-        self._recharging = self.recharging
+        self._recharging = (
+            self.phase == "charge" and self.cycle_open and self._mission_recent(self.data.get("mission"))
+        )
         self._prev_error = self.error_code
         self._prev_bin_full = self.bin_full
         self._prev_levels = {k: v["level"] for k, v in self.parts.items()}
@@ -184,9 +189,23 @@ class ScoveHub:
         return self.mission_status.get("phase") or ""
 
     @property
+    def cycle_open(self) -> bool:
+        return (self.mission_status.get("cycle") or "none") != "none"
+
+    @property
     def recharging(self) -> bool:
-        """In base a ricaricarsi a metà pulizia: il ciclo è ancora aperto e poi riprende."""
-        return self.phase == "charge" and (self.mission_status.get("cycle") or "none") != "none"
+        """In base a ricaricarsi a metà pulizia. Il robot dice «in carica, ciclo aperto» anche
+        nell'istante in cui parte dalla base: conta solo se ci è arrivato durante una pulizia."""
+        return self._recharging and self.phase == "charge"
+
+    def _mission_recent(self, mission: dict[str, Any] | None) -> bool:
+        """La missione è ancora aperta, o si è chiusa da poco (può essere una ricarica a metà)."""
+        if not mission:
+            return False
+        if not mission.get("ended"):
+            return True
+        ended = dt_util.parse_datetime(mission["ended"])
+        return bool(ended) and (dt_util.now() - ended).total_seconds() < REOPEN_HOURS * 3600
 
     @property
     def phase_label(self) -> str:
@@ -321,8 +340,8 @@ class ScoveHub:
         self._count_run_time()
         # La missione è finita solo quando il robot è fermo e non ha più un ciclo in corso:
         # una sosta in base per ricaricarsi a metà pulizia non la chiude.
-        if phase == "charge":
-            self._recharging = self.recharging
+        if not self.cycle_open:
+            self._recharging = False
         self._check_mission_over()
         if error != self._prev_error:
             if error:
@@ -388,6 +407,50 @@ class ScoveHub:
             self._recharging = False
             self._mission_ended()
 
+    def _repair_merged_mission(self) -> None:
+        """Fino alla 1.0.14 una partenza dalla base poteva essere scambiata per la ripresa dopo
+        una ricarica, riaprendo il giro precedente. Lo separa di nuovo: il vecchio torna nello
+        storico, quello di oggi riparte dal momento della ripresa."""
+        mission = self.data.get("mission")
+        alerts = self.data.get("alerts") or []
+        if not mission or mission.get("ended"):
+            return
+        started = dt_util.parse_datetime(mission.get("started") or "")
+        resume = next((a for a in alerts if a.get("key") == "resume"), None)
+        resumed = dt_util.parse_datetime(resume["time"]) if resume else None
+        if not started or not resumed or (resumed - started).total_seconds() < 8 * 3600:
+            return
+        history = self.data.setdefault("history", [])
+        done = next((
+            a for a in alerts if a.get("key") == "done"
+            and started < (dt_util.parse_datetime(a["time"]) or started) < resumed
+        ), None)
+        if done and not (history and history[0].get("started") == mission["started"]):
+            old = {k: mission[k] for k in (
+                "started", "rooms", "room_ids", "initiator", "stuck", "schedule", "coverage", "missed",
+            ) if k in mission}
+            old["recharges"] = max(0, mission.get("recharges", 1) - 1)
+            old["ended"] = done["time"]
+            found = re.search(r"([\d.]+) m² in (\d+) min", done.get("message") or "")
+            if found:
+                old["area_m2"], old["minutes"] = float(found[1]), int(found[2])
+            old["error"] = 0
+            old["result"] = "parziale" if old.get("missed") else "completata"
+            history.insert(0, old)
+            self.data["history"] = history[:MAX_HISTORY]
+        # Il percorso salvato mescola i due giri: lo conto nello storico dei passaggi e riparto.
+        for cell in {logic.cell_of(p[0], p[1]) for p in self.data.get("trail") or []}:
+            self.data["coverage"][cell] = self.data["coverage"].get(cell, 0) + 1
+        self.data["trail"] = []
+        run = (dt_util.now() - resumed).total_seconds() if self.phase in MOVING_PHASES else 0
+        self.data["mission"] = {
+            "started": resume["time"], "ended": None, "rooms": [], "room_ids": None,
+            "initiator": mission.get("initiator"), "stuck": 0, "schedule": mission.get("schedule"),
+            "partial_track": True, "run_seconds": round(max(0.0, run), 1),
+        }
+        self._save_soon()
+        _LOGGER.info("Separato il giro di oggi da quello del %s riaperto per errore", mission["started"])
+
     def _reopen_mission(self, mission: dict[str, Any]) -> None:
         """Il robot riprende dopo la ricarica una pulizia che avevamo dato per chiusa."""
         for cell in {logic.cell_of(p[0], p[1]) for p in self.data.get("trail") or []}:
@@ -411,6 +474,10 @@ class ScoveHub:
 
     def _phase_changed(self, old: str, new: str) -> None:
         mission = self.data.get("mission")
+        if new == "charge" and old in MISSION_PHASES and self.cycle_open:
+            self._recharging = True  # rientrato a metà pulizia: poi riprende
+        if new == "run" and self._recharging and not self._mission_recent(mission):
+            self._recharging = False  # troppo tempo dall'ultima pulizia: è un giro nuovo
         if new == "run" and mission and self._recharging:
             self._recharging = False
             if mission.get("ended"):
@@ -464,6 +531,8 @@ class ScoveHub:
             return None
         coverage = logic.room_coverage(trail, rooms)
         wanted = mission.get("room_ids") if mission.get("rooms") else [r["id"] for r in rooms]
+        if mission.get("partial_track"):
+            wanted = []  # manca l'inizio del percorso: non si può dire cosa è rimasto indietro
         mission["coverage"] = {r["label"]: round(coverage.get(r["id"], 0) * 100) for r in rooms}
         for room in rooms:
             if coverage.get(room["id"], 0) >= logic.ROOM_DONE:

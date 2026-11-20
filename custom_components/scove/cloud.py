@@ -159,6 +159,34 @@ class IRobotCloud:
         return data if isinstance(data, dict) else {}
 
 
+def resolve_user_pmapv_id(pmap: dict[str, Any]) -> str | None:
+    """La versione della mappa da mandare al robot e da cui leggere le stanze.
+
+    Stesso ordine collaudato da Roomba+ su più robot (anche i7): la versione attiva,
+    tranne quando l'ha fatta il robot (o il cloud rielaborando il giro del robot, che
+    non ha le stanze disegnate); poi la versione utente salvata; poi l'ultima versione
+    utente; infine, se non c'è altro, la versione attiva comunque.
+    """
+    details = pmap.get("active_pmapv_details") or {}
+    pmapv = details.get("active_pmapv") or {}
+    if not isinstance(pmapv, dict):
+        pmapv = {}
+    active = pmapv.get("active_pmapv_id") or pmapv.get("pmapv_id") or pmap.get("active_pmapv_id")
+    creator = pmapv.get("creator")
+    robot_made = creator == "robot" or (
+        creator == "cloud" and bool(active) and active == pmap.get("robot_pmapv_id")
+    )
+    for value in (
+        None if robot_made else active,
+        pmap.get("user_pmapv_id"),
+        pmapv.get("last_user_pmapv_id"),
+        active,
+    ):
+        if value:
+            return str(value)
+    return None
+
+
 def parse_map(pmaps: list[dict[str, Any]], umfs: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
     """Riduce pmaps + UMF alla mappa che usa Scove (coordinate in mm).
 
@@ -172,7 +200,7 @@ def parse_map(pmaps: list[dict[str, Any]], umfs: dict[str, dict[str, Any]]) -> d
         pmap_id = pmapv.get("pmap_id") or pmap.get("pmap_id")
         if not pmap_id:
             continue
-        version = pmapv.get("last_user_pmapv_id") or pmapv.get("pmapv_id") or pmap.get("active_pmapv_id")
+        version = resolve_user_pmapv_id(pmap)
         ts = pmapv.get("last_user_ts") or pmap.get("last_pmapv_ts") or 0
         if best is None or ts > best["_ts"]:
             best = {

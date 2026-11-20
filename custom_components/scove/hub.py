@@ -84,6 +84,9 @@ class ScoveHub:
         self._prev_error = 0
         self._prev_bin_full = False
         self._prev_bin_present = True
+        self._robot_pmapv: dict[str, str] = {}   # versione della mappa che il robot dichiara
+        self._map_fetched: float | None = None   # ultimo scaricamento riuscito della mappa
+        self._map_stale = False                  # il robot ha cambiato mappa dopo lo scaricamento
         self._prev_levels: dict[str, str] = {}
         self._offline_since: float | None = None
         self._offline_alerted = False
@@ -284,6 +287,8 @@ class ScoveHub:
             "phase": self.phase, "phase_label": self.phase_label,
             "recharging": self.recharging, "recharge_minutes": self.mission_status.get("rechrgM"),
             "cycle": self.mission_status.get("cycle"),
+            "map_version": (self.data.get("map") or {}).get("version"),
+            "robot_map_versions": dict(self._robot_pmapv),
             "mission_minutes": self.mission_status.get("mssnM"),
             "run_minutes": round(((self.data.get("mission") or {}).get("run_seconds") or 0) / 60),
             "mission_sqft": self.mission_status.get("sqft"),
@@ -338,8 +343,27 @@ class ScoveHub:
         self._dirty = True
 
     @callback
+    def _watch_map_version(self) -> None:
+        """Se la mappa cambia sul robot (riaddestrata o modificata nell'app iRobot),
+        la riscarica subito: un comando con la versione vecchia viene accettato ma il
+        robot non pulisce nulla (errore 224)."""
+        changed = False
+        for entry in self.reported.get("pmaps") or []:
+            if not isinstance(entry, dict):
+                continue
+            for pid, version in entry.items():
+                old = self._robot_pmapv.get(pid)
+                if old is not None and old != version:
+                    changed = True
+                self._robot_pmapv[pid] = version
+        if changed and not self._map_stale:
+            self._map_stale = True
+            _LOGGER.info("La mappa del robot è cambiata: la riscarico dal cloud iRobot")
+            self.entry.async_create_background_task(self.hass, self.async_refresh_cloud(), "scove_map_changed")
+
     def _on_message(self, _message: Any) -> None:
         self._ensure_baselines()
+        self._watch_map_version()
         phase, error, full = self.phase, self.error_code, self.bin_full
         est = (self.reported.get("bbchg3") or {}).get("estCap")
         if est and est > (self.data.get("peak_cap") or 0):
@@ -670,6 +694,8 @@ class ScoveHub:
                     _LOGGER.warning("Geometria della mappa non disponibile: %s", err)
             parsed = parse_map(pmaps, umfs)
             if parsed:
+                self._map_fetched = time.monotonic()
+                self._map_stale = False
                 self.data["map"] = parsed
                 now_iso = dt_util.now().isoformat()
                 for room in parsed.get("rooms") or []:
@@ -724,6 +750,14 @@ class ScoveHub:
     async def async_clean_rooms(
         self, rooms: list[str] | None = None, areas: list[str] | None = None, ordered: bool = True
     ) -> None:
+        fetched = self._map_fetched
+        if self._map_stale or fetched is None or time.monotonic() - fetched > 15 * 60:
+            # Versione della mappa fresca prima del comando; se il cloud non risponde
+            # si prosegue con quella salvata.
+            try:
+                await asyncio.wait_for(self.async_refresh_cloud(), 25)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("Mappa non aggiornata prima della pulizia, uso quella salvata: %s", err)
         robot_map = self.data.get("map") or {}
         regions = self.resolve_rooms(rooms, areas)
         if not regions:
